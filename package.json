@@ -41,7 +41,8 @@
     "test": "vitest run",
     "test:memory": "vitest run --config vitest.memory.config.ts",
     "lint": "oxlint && tsc --noEmit",
-    "lint:fix": "oxlint --fix"
+    "lint:fix": "oxlint --fix",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "memory",
