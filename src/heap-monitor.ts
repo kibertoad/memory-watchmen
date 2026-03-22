@@ -11,7 +11,6 @@ import type { HeapMonitorOptions, HeapMonitorResult, MemorySample } from './type
  * and V8-internal deferred tasks (weak callback processing, dead ephemeron
  * table entry cleanup) may not complete until a subsequent cycle.
  *
- * Pattern originates from undici's tls-cert-leak.js test.
  * Requires `--expose-gc` flag. Throws a clear error if unavailable.
  */
 export function forceGC(): void {
@@ -48,7 +47,7 @@ export function collectMemorySample(): MemorySample {
  * 1. Monotonic growth — heap grew every sample for N+ consecutive checks (tight leak)
  * 2. Envelope growth — first-third avg vs last-third avg exceeds threshold (step-wise/burst leaks)
  *
- * Pattern shared by json-river and kafka-plt, originating from undici's tls-cert-leak.js.
+ * See PATTERNS.md for background on why this approach works.
  */
 export async function monitorHeap(options?: HeapMonitorOptions): Promise<HeapMonitorResult> {
   const sampleCount = options?.sampleCount ?? 15

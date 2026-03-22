@@ -512,3 +512,48 @@ npx memlab run --scenario scenario.js
 # Analyze a heap snapshot
 npx memlab analyze --snapshot heap.heapsnapshot
 ```
+
+## Prior Art and References
+
+The patterns in this library draw on established practices from several Node.js projects and V8 documentation:
+
+- **Double GC and heap sampling** — the pattern of calling `global.gc()` twice and sampling `process.memoryUsage()` at intervals is widely used in Node.js core and ecosystem test suites (notably in undici's TLS and fetch leak tests, and Node.js core's own `test/parallel/` memory tests). Joyee Cheung's [Memory leak testing with V8/Node.js](https://joyeecheung.github.io/blog/2024/03/17/memory-leak-testing-v8-node-js-1/) (parts 1 and 2) provides authoritative background on why this pattern works and its limitations.
+
+- **WeakRef + FinalizationRegistry for object tracking** — this approach to verifying GC collection is used in Node.js core tests and browser engine test suites. The [V8 blog post on weak references](https://v8.dev/features/weak-references) and [MDN FinalizationRegistry documentation](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/FinalizationRegistry) describe the semantics and caveats.
+
+- **Dual-metric leak detection** (monotonic growth + envelope growth) — developed independently in streaming library test suites to catch both tight leaks (every operation grows) and burst/step-wise leaks (periodic growth with partial recovery). The monotonic check descends from simple consecutive-growth counters used in HTTP client tests; the envelope check adds statistical robustness for workloads with variable allocation rates.
+
+- **Stream buffer introspection** — `readableLength`, `writableLength`, `writableNeedDrain`, and `readableFlowing` are documented in the [Node.js Stream API](https://nodejs.org/docs/latest/api/stream.html). The `highWaterMark` semantics (threshold, not limit) are explained in the [Node.js backpressuring guide](https://nodejs.org/en/learn/modules/backpressuring-in-streams).
+
+- **V8 GC internals** — understanding of `global.gc()` behavior (synchronous full GC by default), ephemeron processing, and FinalizationRegistry timing draws on V8 source code and the [V8 Oilpan library blog post](https://v8.dev/blog/oilpan-library). The `process.memoryUsage().arrayBuffers` field was added in Node.js 13.9 via [PR #31550](https://github.com/nodejs/node/pull/31550).
+
+- **Comparative memory profiling** — the HTTP-based profiler with NDJSON streaming and HTML chart generation is inspired by benchmarking patterns common in streaming parser libraries, where comparing peak/baseline/delta across implementations is the primary optimization workflow.
+
+## Further Reading
+
+### V8 Garbage Collection
+
+- [Trash talk: the Orinoco garbage collector](https://v8.dev/blog/trash-talk) — overview of V8's generational GC, Scavenger (young generation), and Mark-Compact (old generation)
+- [Concurrent marking in V8](https://v8.dev/blog/concurrent-marking) — how V8 marks objects concurrently with JavaScript execution
+- [Jank Busters Part Two: Orinoco](https://v8.dev/blog/orinoco) — parallel and concurrent GC techniques in V8
+- [Getting garbage collection for free](https://v8.dev/blog/free-garbage-collection) — idle-time GC scheduling
+- [Weak references and finalizers](https://v8.dev/features/weak-references) — V8's perspective on WeakRef and FinalizationRegistry semantics
+
+### Node.js Memory
+
+- [Memory leak testing with V8/Node.js, Part 1](https://joyeecheung.github.io/blog/2024/03/17/memory-leak-testing-v8-node-js-1/) — authoritative guide on heap snapshot testing patterns, `global.gc()` behavior, and why tests can be flaky (by Node.js core contributor Joyee Cheung)
+- [Memory leak testing with V8/Node.js, Part 2](https://joyeecheung.github.io/blog/2024/03/17/memory-leak-testing-v8-node-js-2/) — FinalizationRegistry-based testing, `gcUntil()` patterns, and limitations of current approaches
+- [Node.js: Understanding and Tuning Memory](https://nodejs.org/en/learn/diagnostics/memory/understanding-and-tuning-memory) — official guide to `--max-old-space-size`, heap limits, and memory diagnostics
+- [Node.js Diagnostics: Memory](https://nodejs.org/en/learn/diagnostics/memory) — official overview of memory debugging tools and techniques
+- [Backpressuring in Streams](https://nodejs.org/en/learn/modules/backpressuring-in-streams) — official guide to how `highWaterMark`, `write()` return value, and `'drain'` work together
+
+### Heap Snapshot Analysis
+
+- [Chrome DevTools: Memory panel](https://developer.chrome.com/docs/devtools/memory) — using allocation timelines, heap snapshots, and retainer views
+- [memlab documentation](https://facebook.github.io/memlab/) — automated heap snapshot diffing, retainer trace analysis, and React-specific leak detection
+
+### FinalizationRegistry and WeakRef
+
+- [MDN: FinalizationRegistry](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/FinalizationRegistry) — API reference with caveats about non-deterministic cleanup timing
+- [MDN: WeakRef](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakRef) — API reference with guidance on when (and when not) to use weak references
+- [TC39 WeakRefs proposal](https://github.com/tc39/proposal-weakrefs) — the specification rationale, including why cleanup callbacks are intentionally non-deterministic

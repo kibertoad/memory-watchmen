@@ -37,8 +37,9 @@ async function pollUntilCollected(
  * Create a tracker that monitors object garbage collection using
  * WeakRef and FinalizationRegistry.
  *
- * Pattern from undici's gc.js — tracks whether specific objects are
- * properly released after use.
+ * Tracks whether specific objects are properly released after use
+ * using WeakRef for reachability checks and FinalizationRegistry
+ * for collection notification.
  */
 export function createTracker(): ObjectTracker {
   const entries = new Map<string, TrackedEntry>()

@@ -2,7 +2,7 @@
 
 Memory testing, profiling, and leak detection for Node.js -- heap monitoring, object lifecycle tracking, stream buffer assertions, and comparative profiling.
 
-Extracts and generalizes battle-tested patterns from [undici](https://github.com/nodejs/undici), providing CI-friendly tools for verifying memory behavior under streaming/backpressure workloads, tracking object lifecycle via WeakRef/FinalizationRegistry, and comparing memory usage across implementations with an HTTP-based profiler and chart generation.
+Provides CI-friendly tools for verifying memory behavior under streaming/backpressure workloads, tracking object lifecycle via WeakRef/FinalizationRegistry, and comparing memory usage across implementations with an HTTP-based profiler and chart generation.
 
 ## Install
 
@@ -39,7 +39,7 @@ import { forceGC, collectMemorySample, monitorHeap, formatHeapResult } from 'mem
 
 Double-pass garbage collection. Requires `--expose-gc` flag. Throws a clear error if unavailable.
 
-Why double GC? Node may need multiple passes to collect objects held by closures, `FinalizationRegistry` callbacks, or `WeakRef` cleanup. Pattern originates from undici's tls-cert-leak.js.
+Why double GC? `FinalizationRegistry` callbacks run asynchronously after GC, and V8 deferred tasks (weak callback processing, dead ephemeron cleanup) may not complete in a single cycle. Two calls empirically produce more stable readings. See [PATTERNS.md](./PATTERNS.md#why-double-gc) for details.
 
 #### `collectMemorySample(): MemorySample`
 
