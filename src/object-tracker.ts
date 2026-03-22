@@ -9,6 +9,30 @@ interface TrackedEntry {
   collected: boolean
 }
 
+async function pollUntilCollected(
+  check: () => boolean,
+  label: string,
+  options?: CollectionOptions,
+): Promise<void> {
+  const timeout = options?.timeout ?? 5000
+  const gcIntervalMs = options?.gcIntervalMs ?? 100
+  const deadline = Date.now() + timeout
+
+  while (Date.now() < deadline) {
+    forceGC()
+    if (check()) return
+    await sleep(gcIntervalMs)
+  }
+
+  forceGC()
+  if (check()) return
+
+  throw new Error(
+    `Object "${label}" was not garbage collected within ${timeout}ms. ` +
+      'It may still be referenced somewhere.',
+  )
+}
+
 /**
  * Create a tracker that monitors object garbage collection using
  * WeakRef and FinalizationRegistry.
@@ -44,24 +68,7 @@ export function createTracker(): ObjectTracker {
   }
 
   async function expectCollected(handle: TrackerHandle, options?: CollectionOptions): Promise<void> {
-    const timeout = options?.timeout ?? 5000
-    const gcIntervalMs = options?.gcIntervalMs ?? 100
-    const deadline = Date.now() + timeout
-
-    while (Date.now() < deadline) {
-      forceGC()
-      if (handle.isCollected()) return
-      await sleep(gcIntervalMs)
-    }
-
-    // Final attempt
-    forceGC()
-    if (handle.isCollected()) return
-
-    throw new Error(
-      `Object "${handle.label}" was not garbage collected within ${timeout}ms. ` +
-        'It may still be referenced somewhere.',
-    )
+    return pollUntilCollected(() => handle.isCollected(), handle.label, options)
   }
 
   async function expectAllCollected(options?: CollectionOptions): Promise<void> {
@@ -78,7 +85,6 @@ export function createTracker(): ObjectTracker {
       await sleep(gcIntervalMs)
     }
 
-    // Final attempt
     forceGC()
     const uncollected = [...entries.values()]
       .filter((e) => !e.collected && e.weakRef.deref() !== undefined)
@@ -126,21 +132,5 @@ export async function expectCollected(
   handle: TrackerHandle,
   options?: CollectionOptions,
 ): Promise<void> {
-  const timeout = options?.timeout ?? 5000
-  const gcIntervalMs = options?.gcIntervalMs ?? 100
-  const deadline = Date.now() + timeout
-
-  while (Date.now() < deadline) {
-    forceGC()
-    if (handle.isCollected()) return
-    await sleep(gcIntervalMs)
-  }
-
-  forceGC()
-  if (handle.isCollected()) return
-
-  throw new Error(
-    `Object "${handle.label}" was not garbage collected within ${timeout}ms. ` +
-      'It may still be referenced somewhere.',
-  )
+  return pollUntilCollected(() => handle.isCollected(), handle.label, options)
 }

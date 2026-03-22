@@ -1,7 +1,7 @@
 {
   "name": "memory-watchmen",
-  "version": "0.1.0",
-  "description": "Lightweight memory leak detection for Node.js streams — heap sampling with monotonic and envelope growth checks",
+  "version": "1.0.0",
+  "description": "Memory testing, profiling, and leak detection for Node.js — heap monitoring, object lifecycle tracking, stream buffer assertions, and comparative profiling",
   "type": "module",
   "exports": {
     ".": {

@@ -19,7 +19,8 @@ export function snapshotStreamState(stream: AnyStream): StreamSnapshot {
     snapshot.readableHighWaterMark = stream.readableHighWaterMark
   }
   if ('readableFlowing' in stream) {
-    snapshot.readableFlowing = stream.readableFlowing as boolean | null
+    const flowing = (stream as Readable).readableFlowing
+    snapshot.readableFlowing = flowing ?? null
   }
   if ('writableLength' in stream && typeof stream.writableLength === 'number') {
     snapshot.writableLength = stream.writableLength
@@ -52,6 +53,7 @@ export function monitorStreamBuffers(
       })
     }
   }, intervalMs)
+  timer.unref()
 
   return {
     get samples() {

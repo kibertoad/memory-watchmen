@@ -1,8 +1,8 @@
 # memory-watchmen
 
-Lightweight memory leak detection for Node.js streams -- heap sampling with monotonic and envelope growth checks.
+Memory testing, profiling, and leak detection for Node.js -- heap monitoring, object lifecycle tracking, stream buffer assertions, and comparative profiling.
 
-Extracts and generalizes battle-tested memory testing patterns from [undici](https://github.com/nodejs/undici), providing CI-friendly leak detection for streaming workloads, object lifecycle verification, and stream buffer assertions.
+Extracts and generalizes battle-tested patterns from [undici](https://github.com/nodejs/undici), providing CI-friendly tools for verifying memory behavior under streaming/backpressure workloads, tracking object lifecycle via WeakRef/FinalizationRegistry, and comparing memory usage across implementations with an HTTP-based profiler and chart generation.
 
 ## Install
 
