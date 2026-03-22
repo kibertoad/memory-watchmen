@@ -1,0 +1,65 @@
+{
+  "name": "memory-watchmen",
+  "version": "0.1.0",
+  "description": "Lightweight memory leak detection for Node.js streams — heap sampling with monotonic and envelope growth checks",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./vitest": {
+      "import": "./dist/vitest.js",
+      "types": "./dist/vitest.d.ts"
+    },
+    "./profiler": {
+      "import": "./dist/profiler/server.js",
+      "types": "./dist/profiler/server.d.ts"
+    },
+    "./profiler/runner": {
+      "import": "./dist/profiler/runner.js",
+      "types": "./dist/profiler/runner.d.ts"
+    },
+    "./profiler/chart": {
+      "import": "./dist/profiler/chart.js",
+      "types": "./dist/profiler/chart.d.ts"
+    }
+  },
+  "bin": {
+    "memory-watchmen": "./dist/bin/memory-watchmen.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:memory": "vitest run --config vitest.memory.config.ts",
+    "lint": "oxlint && tsc --noEmit",
+    "lint:fix": "oxlint --fix"
+  },
+  "keywords": [
+    "memory",
+    "leak",
+    "detection",
+    "heap",
+    "gc",
+    "streams",
+    "backpressure",
+    "profiler",
+    "testing"
+  ],
+  "author": "Igor Savin",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "oxlint": "^1.56.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}
