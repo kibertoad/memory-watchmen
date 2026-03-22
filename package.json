@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Memory testing, profiling, and leak detection for Node.js — heap monitoring, object lifecycle tracking, stream buffer assertions, and comparative profiling",
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
