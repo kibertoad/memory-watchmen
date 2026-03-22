@@ -1,8 +1,23 @@
 # memory-watchmen
 
-Memory testing, profiling, and leak detection for Node.js -- heap monitoring, object lifecycle tracking, stream buffer assertions, and comparative profiling.
+Memory testing, profiling, and leak detection for Node.js - heap monitoring, object lifecycle tracking, stream buffer assertions, and comparative profiling.
 
-Provides CI-friendly tools for verifying memory behavior under streaming/backpressure workloads, tracking object lifecycle via WeakRef/FinalizationRegistry, and comparing memory usage across implementations with an HTTP-based profiler and chart generation.
+CI-friendly heap stability checks, object lifecycle tracking with WeakRef/FinalizationRegistry, stream buffer assertions, and an HTTP profiler with chart generation for comparing memory usage across implementations.
+
+## Table of Contents
+
+- [Install](#install)
+- [Quick Start](#quick-start)
+- [API](#api)
+  - [Heap Monitor](#heap-monitor)
+  - [Object Tracker](#object-tracker)
+  - [Stream Assertions](#stream-assertions)
+  - [Test Helpers](#test-helpers)
+  - [Profiler](#profiler)
+- [CLI](#cli)
+- [Memory Test Setup](#memory-test-setup)
+- [When to Use memlab Instead](#when-to-use-memlab-instead)
+- [When to Use memory-watchmen](#when-to-use-memory-watchmen)
 
 ## Install
 
@@ -49,8 +64,8 @@ Returns `{ timestamp, heapUsed, heapTotal, rss, external }` from `process.memory
 
 Dual-metric leak detection over time:
 
-1. **Monotonic growth** -- heap grew every sample for N+ consecutive checks (tight leak)
-2. **Envelope growth** -- first-third avg vs last-third avg exceeds threshold (step-wise/burst leaks)
+1. **Monotonic growth** - heap grew every sample for N+ consecutive checks (tight leak)
+2. **Envelope growth** - first-third avg vs last-third avg exceeds threshold (step-wise/burst leaks)
 
 Options (all optional):
 | Option | Default | Description |
@@ -74,7 +89,7 @@ import { createTracker, trackObject, expectCollected } from 'memory-watchmen'
 
 #### `createTracker(): ObjectTracker`
 
-Creates a tracker using `WeakRef` + `FinalizationRegistry` to verify objects are garbage collected.
+Tracks objects with `WeakRef` + `FinalizationRegistry` to verify they get garbage collected.
 
 ```typescript
 const tracker = createTracker()
@@ -88,10 +103,10 @@ await tracker.expectCollected(handle, { timeout: 5000 })
 ```
 
 Methods:
-- `tracker.track(obj, label?)` -- returns a `TrackerHandle`
-- `tracker.expectCollected(handle, options?)` -- polls GC until collected, throws on timeout
-- `tracker.expectAllCollected(options?)` -- checks all tracked objects
-- `tracker.handles()` -- list all handles
+- `tracker.track(obj, label?)` - returns a `TrackerHandle`
+- `tracker.expectCollected(handle, options?)` - polls GC until collected, throws on timeout
+- `tracker.expectAllCollected(options?)` - checks all tracked objects
+- `tracker.handles()` - list all handles
 
 #### `trackObject(obj, label?)`
 
@@ -99,7 +114,7 @@ Convenience: creates a one-off tracker, returns `{ handle, tracker }`.
 
 #### `expectCollected(handle, options?)`
 
-Standalone GC polling -- works with handles from any tracker.
+Standalone GC polling - works with handles from any tracker.
 
 ### Stream Assertions
 
@@ -116,7 +131,7 @@ import {
 
 #### `snapshotStreamState(stream): StreamSnapshot`
 
-One-shot capture of buffer and flow state. Duck-typed for Readable, Writable, and Duplex.
+Captures buffer and flow state once. Duck-typed, works with Readable, Writable, and Duplex.
 
 Returns: `{ readableLength?, readableHighWaterMark?, readableFlowing?, writableLength?, writableHighWaterMark?, writableNeedDrain?, timestamp }`
 
@@ -126,7 +141,7 @@ Continuous monitoring. Call `monitor.stop()` to end and retrieve all samples.
 
 #### `assertBufferBounded(stream, options?): Promise<StreamSnapshot[]>`
 
-Periodic checks that buffer sizes stay within `highWaterMark * multiplier`. Throws on violation.
+Checks periodically that buffer sizes stay within `highWaterMark * multiplier`. Throws on violation.
 
 Options: `{ intervalMs?, durationMs?, multiplier?, signal? }`
 
@@ -146,7 +161,7 @@ import { assertNoLeak, withHeapMonitor } from 'memory-watchmen/vitest'
 
 #### `assertNoLeak(fn, options?)`
 
-Run a function and assert it doesn't leak. Throws with diagnostic message on failure.
+Runs a function and asserts it doesn't leak. Throws with a diagnostic message on failure.
 
 ```typescript
 await assertNoLeak(async (ctx) => {
@@ -159,7 +174,7 @@ await assertNoLeak(async (ctx) => {
 
 #### `withHeapMonitor(testFn, options?): Promise<HeapMonitorResult>`
 
-Wraps a test function with heap monitoring. Does NOT throw -- returns the result for custom assertions.
+Wraps a test function with heap monitoring. Does NOT throw - returns the result for custom assertions.
 
 ```typescript
 const result = await withHeapMonitor(async (ctx) => {
@@ -170,7 +185,7 @@ expect(result.passed, formatHeapResult(result, 'streaming')).toBe(true)
 
 ### Profiler
 
-The profiler is an HTTP-based memory comparison tool. You register "approach" functions that process a file, the server runs them while sampling `process.memoryUsage()` at regular intervals, and streams NDJSON samples back. This lets you compare memory behavior of different implementations side-by-side.
+HTTP-based memory comparison tool. Register "approach" functions that process a file, the server runs them while sampling `process.memoryUsage()`, and streams NDJSON samples back. Compare memory behavior of different implementations side-by-side.
 
 #### Step 1: Define approaches
 
@@ -209,7 +224,7 @@ approaches.set('streaming-parse', async (filePath, _multi, onSample) => {
 export default approaches
 ```
 
-Call `onSample(collectMemorySample())` at meaningful points -- the server also samples on a timer, so you don't need to call it on every chunk.
+Call `onSample(collectMemorySample())` at meaningful points - the server also samples on a timer, so you don't need to call it on every chunk.
 
 #### Step 2: Start the server and profile
 
@@ -250,10 +265,10 @@ const results = await runProfiles({
 })
 
 // Output directory contains:
-//   summary.json     -- peak/baseline/delta per approach
-//   chart-data.json  -- time-series for external tools
-//   report.txt       -- ASCII comparison table
-//   samples/         -- raw NDJSON per approach
+//   summary.json     - peak/baseline/delta per approach
+//   chart-data.json  - time-series for external tools
+//   report.txt       - ASCII comparison table
+//   samples/         - raw NDJSON per approach
 ```
 
 ## CLI
@@ -296,7 +311,7 @@ export default defineConfig({
 }
 ```
 
-No `NODE_OPTIONS` or `cross-env` needed -- `execArgv` in the vitest config handles propagation explicitly.
+No `NODE_OPTIONS` or `cross-env` needed - `execArgv` in the vitest config handles propagation explicitly.
 
 ### With node:test
 
@@ -308,21 +323,21 @@ No `NODE_OPTIONS` or `cross-env` needed -- `execArgv` in the vitest config handl
 
 ## When to Use memlab Instead
 
-Use [memlab](https://github.com/nicolo-ribaudo/memlab) when you need:
+Reach for [memlab](https://github.com/nicolo-ribaudo/memlab) when you need:
 
-- **Which object leaked** -- retainer traces showing the full reference chain
-- **Browser/DOM leak detection** -- Puppeteer-driven E2E testing
-- **React fiber/hook analysis** -- built-in detached fiber detection
-- **Heap snapshot diffing** -- object-level comparison across actions
-- **Dominator tree analysis** -- understanding retained size hierarchies
+- Retainer traces showing the full reference chain (which object leaked and why)
+- Browser/DOM leak detection with Puppeteer
+- React fiber/hook analysis (detached fiber detection)
+- Object-level heap snapshot diffing
+- Retained size and dominator tree analysis
 
 ## When to Use memory-watchmen
 
-- **CI-friendly** process-level heap stability checks
-- **Streaming/backpressure** leak detection during sustained load
-- **Object collection verification** via WeakRef/FinalizationRegistry
-- **Stream buffer assertions** (readableLength, writableNeedDrain, etc.)
-- **Comparative memory profiling** with chart generation
+- Process-level heap stability checks that run in CI
+- Leak detection during sustained streaming/backpressure load
+- Checking that objects actually get collected (WeakRef/FinalizationRegistry)
+- Stream buffer assertions (readableLength, writableNeedDrain, etc.)
+- Comparing memory profiles across implementations with chart generation
 
 ## License
 

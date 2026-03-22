@@ -2,15 +2,33 @@
 
 Best practices and patterns for detecting memory leaks, optimizing memory usage, and testing streaming workloads in Node.js.
 
+## Table of Contents
+
+- [GC is Non-Deterministic](#gc-is-non-deterministic)
+- [Why Call gc() Twice?](#why-call-gc-twice)
+- [Warm-Up Periods](#warm-up-periods)
+- [Dual-Metric Leak Detection](#dual-metric-leak-detection)
+- [Sample Count and Interval Tuning](#sample-count-and-interval-tuning)
+- [CI Considerations](#ci-considerations)
+- [Profiler Workflow](#profiler-workflow)
+- [Forking, Workers, and --expose-gc](#forking-workers-and---expose-gc)
+- [Stream Backpressure Testing](#stream-backpressure-testing)
+- [WeakRef and FinalizationRegistry](#weakref-and-finalizationregistry)
+- [Memory Metrics](#memory-metrics)
+- [Common Node.js Leak Sources](#common-nodejs-leak-sources)
+- [Debugging Tools](#debugging-tools)
+- [Prior Art and References](#prior-art-and-references)
+- [Further Reading](#further-reading)
+
 ## GC is Non-Deterministic
 
-V8's garbage collector is non-deterministic. It uses incremental marking, concurrent sweeping, and generational collection. The exact timing and type of GC (minor Scavenge vs major Mark-Sweep) is decided internally by V8 based on allocation pressure, not by the caller.
+V8's garbage collector is non-deterministic. It uses incremental marking, concurrent sweeping, and generational collection. When and what kind of GC runs (minor Scavenge vs major Mark-Sweep) is decided by V8 based on allocation pressure, not by you.
 
 Memory tests should look for **trends over time**, not exact values. A single snapshot is meaningless. Always use multiple samples with forced GC and accept that some noise is inevitable.
 
-`--expose-gc` exposes V8's gc extension; automatic GC still runs normally, and manual calls are supplemental. However, manually-triggered GC calls block the event loop during synchronous execution and should never be used in production -- only in test scripts.
+`--expose-gc` exposes V8's gc extension; automatic GC still runs normally, and manual calls are supplemental. However, manually-triggered GC calls block the event loop during synchronous execution and should never be used in production - only in test scripts.
 
-## Why Double GC
+## Why Call gc() Twice?
 
 Calling `global.gc()` twice increases measurement stability:
 
@@ -23,26 +41,26 @@ function forceGC(): void {
 
 Why two calls help:
 
-1. **FinalizationRegistry**: Cleanup callbacks run asynchronously *after* GC (in a macrotask-like slot between event loop phases), not during the GC pause itself. A second `gc()` call gives those callbacks time to execute, and the resulting dereferenced objects can then be collected in the second cycle.
-2. **Weak container cleanup**: `WeakMap`/`WeakSet` use ephemeron semantics -- reachability is determined during GC within a single cycle, but observable disappearance of dead entries (table slot cleanup) is an implementation detail that may not complete immediately. A second cycle increases the likelihood that stale entries are fully reclaimed.
+1. **FinalizationRegistry**: Cleanup callbacks run asynchronously in a separate cleanup phase after GC, not during the GC pause itself and not as part of the normal microtask queue. A second `gc()` call gives those callbacks time to execute, and the resulting dereferenced objects can then be collected in the second cycle.
+2. **Weak container cleanup**: `WeakMap`/`WeakSet` use ephemeron semantics - V8 resolves ephemeron reachability within a single GC cycle, but objects that become unreachable as a *consequence* of ephemeron resolution may not be collected until the next cycle. A second `gc()` call reclaims these transitively freed objects.
 3. **V8-internal deferred tasks**: GC-related tasks like C++ pointers cleanup, weak callback processing, and finalization can be deferred until the thread is idle. A second `gc()` processes these deferred tasks.
 
-Note: `gc()` with no arguments triggers a synchronous full GC. Minor GC can be requested via the legacy boolean form `gc(true)` or an options object `gc({ type: 'minor' })`. The full GC is deterministic in *what* it collects -- there is no randomness in whether reachable objects survive. The non-determinism in memory testing comes from *when* V8's automatic GC runs between your samples, measurement timing, and FinalizationRegistry callback scheduling.
+Note: `global.gc()` typically triggers a synchronous major GC cycle, but V8 may still defer certain cleanup tasks (e.g., finalization callbacks), so it should not be treated as a guarantee of full memory reclamation. Minor GC can be requested via `gc(true)` or `gc({ type: 'minor' })`, but these APIs are undocumented and not stable across Node.js/V8 versions - avoid relying on them in tests. The full GC is deterministic in *what* it collects - there is no randomness in whether reachable objects survive. The non-determinism in memory testing comes from *when* V8's automatic GC runs between your samples, measurement timing, and cleanup callback scheduling.
 
-The key idea is **measurement stability**, not a correctness guarantee. Two calls empirically produce more consistent readings than one.
+The point is measurement stability, not a correctness guarantee. Two calls just produce more consistent readings than one.
 
 Always run with `--expose-gc`. In test scripts: `NODE_OPTIONS=--expose-gc`.
 
 ## Warm-Up Periods
 
-Measurements taken immediately after process start include noise from:
+Measurements right after process start are noisy because of:
 
 - **JIT compilation**: V8 compiles hot functions on first use, allocating code objects.
 - **Inline caches and hidden classes**: V8 stabilizes object shapes and call-site caches after repeated calls, causing initial allocation spikes.
 - **Lazy initialization**: Modules, caches, and pools initialize on first access.
 - **Buffer pool priming**: Node.js allocates internal buffer pools on first I/O.
 
-Wait 2--5 seconds after workload starts before sampling. This lets the process reach a steady state.
+Wait long enough for the workload to reach steady state (often a few seconds, but should be validated for your specific workload - JIT thresholds, CPU speed, and allocation patterns all affect warm-up duration).
 
 ```typescript
 // Start workload
@@ -63,19 +81,19 @@ Two complementary checks catch different leak patterns:
 
 Heap grew every sample for N+ consecutive checks. Catches tight leaks where every operation adds memory.
 
-**When it triggers**: Event listeners accumulating on every request. Map entries never deleted. Closures capturing scope in a loop.
+Examples: event listeners accumulating on every request, Map entries never deleted, closures capturing scope in a loop.
 
-**Threshold**: 10 consecutive growth samples (default). Lower values increase false positives from GC timing jitter.
+Default threshold is 10 consecutive growth samples. Lower values increase false positives from GC timing jitter.
 
-**Important**: This check is most reliable when GC is forced before each sample (which `monitorHeap` does). Without forced GC, V8's non-deterministic collection timing can create false streaks of growth that aren't actual leaks.
+**Important**: This check is most reliable when GC is forced before each sample (which `monitorHeap` does). Without forced GC, V8's non-deterministic collection timing can create false streaks of growth that aren't actual leaks. Conversely, tests that rely on forced GC may miss leaks that only appear under natural GC scheduling in production - forced GC can create artificial stability that masks real-world behavior.
 
 ### Envelope Growth
 
 Compare the average of the first third of samples to the last third. Catches step-wise or burst leaks that aren't monotonic.
 
-**When it triggers**: Memory grows in bursts (e.g., batch processing), then partially reclaims. Buffer pool expansions that don't shrink. Periodic cache rebuilds that grow over time.
+Examples: memory grows in bursts (batch processing) then partially reclaims, buffer pool expansions that don't shrink, periodic cache rebuilds that grow over time.
 
-**Threshold**: 15 MB drift (default). Adjust based on workload size.
+Default threshold is 15 MB drift. Adjust based on workload size.
 
 ### Why Both?
 
@@ -95,7 +113,7 @@ The default window is **15 samples x 1.5s = 22.5 seconds**. This balances:
 For fast leaks (streams, tight loops): reduce interval to 500ms, keep 15 samples.
 For slow leaks (connection pools, caches): increase to 2000ms and 20 samples.
 
-Allocation rate matters: high allocation rate workloads tolerate shorter intervals because GC runs frequently and samples are more meaningful. Low allocation rate workloads need longer windows to distinguish signal from noise.
+Allocation rate matters. High-allocation workloads tolerate shorter intervals because GC runs often and samples are more meaningful. Low-allocation workloads need longer windows to separate signal from noise.
 
 ## CI Considerations
 
@@ -104,7 +122,7 @@ Run memory tests in isolation. Parallel tests distort GC and memory signals beca
 - GC pauses from other tests create measurement jitter
 - Shared process memory (if using worker threads) conflates signals
 
-Recommended vitest config for memory tests:
+Vitest config for memory tests:
 
 ```typescript
 // vitest.memory.config.ts
@@ -120,19 +138,19 @@ export default defineConfig({
 })
 ```
 
-Do not rely on `NODE_OPTIONS=--expose-gc` for vitest -- it applies to the vitest process itself but may not propagate to workers depending on the pool type. The `execArgv` config is explicit and reliable.
+Do not rely on `NODE_OPTIONS=--expose-gc` for vitest - it applies to the vitest process itself but may not propagate to workers depending on the pool type. The `execArgv` config is explicit and reliable.
 
 ## Profiler Workflow
 
-The profiler server is designed for comparative memory analysis -- answering "which approach uses less memory?" rather than "is there a leak?". Use `monitorHeap()` for leak detection and the profiler for optimization work.
+The profiler answers "which approach uses less memory?" not "is there a leak?". Use `monitorHeap()` for leak detection and the profiler for optimization work.
 
 ### Designing Approach Functions
 
 Each approach function receives `(filePath, multi, onSample, path?)` and should:
 
-1. **Call `onSample(collectMemorySample())` at meaningful points** -- after loading data, after processing a batch, after cleanup. The server also samples on a timer, so you don't need to sample every iteration.
-2. **Process the entire file** -- the profiler measures peak/baseline/delta over the full run.
-3. **Avoid caching between runs** -- each approach should start from a clean state.
+1. **Call `onSample(collectMemorySample())` at meaningful points** - after loading data, after processing a batch, after cleanup. The server also samples on a timer, so you don't need to sample every iteration.
+2. **Process the entire file** - the profiler measures peak/baseline/delta over the full run.
+3. **Avoid caching between runs** - each approach should start from a clean state.
 
 ### Collecting Enough Samples for Useful Charts
 
@@ -150,9 +168,9 @@ The chart normalizes all timestamps to relative (t=0 at first sample), so runs o
 |--------|---------|
 | **Baseline** | Heap after forced GC before work starts |
 | **Peak** | Maximum `heapUsed` during the run |
-| **Delta** | Peak minus baseline -- the memory cost of the workload |
+| **Delta** | Peak minus baseline - the memory cost of the workload |
 
-A low delta means the approach processes data without materializing large intermediate structures. Compare deltas across approaches to find the most memory-efficient implementation.
+A low delta means the approach avoids materializing large intermediate structures. Compare deltas across approaches to find what's most memory-efficient.
 
 ## Forking, Workers, and `--expose-gc`
 
@@ -170,7 +188,7 @@ You must explicitly pass the flag to each process or thread that needs it.
 ```typescript
 import { fork } from 'node:child_process'
 
-// GC is NOT available in the child — --expose-gc was not passed
+// GC is NOT available in the child - --expose-gc was not passed
 const bad = fork('./worker.js')
 
 // GC IS available in the child
@@ -179,7 +197,7 @@ const good = fork('./worker.js', [], {
 })
 ```
 
-This is relevant for the profiler server, which uses `fork()` to start the server process:
+The profiler server uses `fork()` internally and handles this for you:
 
 ```typescript
 import { startServer } from 'memory-watchmen/profiler/runner'
@@ -207,11 +225,11 @@ const good = new Worker('./worker.js', {
 `NODE_OPTIONS=--expose-gc` applies to the initial Node.js process and any child processes that inherit the environment (which is the default for `fork()` and `spawn()`). However:
 
 - Worker threads do **not** inherit `NODE_OPTIONS` by default.
-- Some test runners (vitest, jest) may spawn workers without propagating `NODE_OPTIONS` to their execution context. The flag will be in the environment, but the worker may not have been started with it.
+- Test runners (vitest, jest) may spawn workers without propagating `NODE_OPTIONS` to their execution context. The environment variable is inherited by forked child processes, but whether the runner actually uses it as `execArgv` depends on the runner's pool implementation. As of vitest 4.x: the default `threads` pool uses `worker_threads`, which does not support `--expose-gc` at all; the `forks` pool uses `child_process.fork()`, which inherits the environment but still benefits from explicit `execArgv` configuration for clarity.
 
 ### Test Runner Considerations
 
-**Vitest**: Uses worker threads by default. The `cross-env NODE_OPTIONS=--expose-gc` in your npm script ensures the vitest process has `gc()`, but individual test workers may also need it. In practice, vitest passes `NODE_OPTIONS` through to its worker processes because `fork()` inherits the environment, but verify with a simple test:
+**Vitest** (4.x): The default pool (`threads`) uses `worker_threads`, which **cannot use `--expose-gc`**. For memory tests, use `pool: 'forks'` with explicit `execArgv: ['--expose-gc']` (see the CI config example above). Do not rely on `NODE_OPTIONS` alone - even with the `forks` pool, explicit `execArgv` is more reliable and self-documenting. Verify with:
 
 ```typescript
 it('gc is available', () => {
@@ -229,7 +247,7 @@ it('gc is available', () => {
 
 For multi-process testing, either:
 1. Monitor each process/worker independently and aggregate results
-2. Use OS-level metrics (`rss` from the parent includes shared pages but not child process memory)
+2. Use OS-level metrics (RSS reflects memory of the current process only - it may include shared pages like shared libraries, but does not include memory used by separate child processes)
 3. Pipe memory samples from workers back to the main process via `parentPort.postMessage()`
 
 ```typescript
@@ -286,23 +304,25 @@ const monitor = monitorStreamBuffers([myTransform], 100)
 const samples = monitor.stop()
 
 // Check that buffers didn't grow unbounded
-// Note: buffers CAN temporarily exceed highWaterMark -- that's normal.
+// Note: buffers CAN temporarily exceed highWaterMark - that's normal.
 // The concern is unbounded growth over time, not momentary spikes.
 const maxReadable = Math.max(...samples.map(s => s.snapshot.readableLength ?? 0))
 console.log(`Max readable buffer: ${maxReadable}`)
 ```
 
 Key properties:
-- `readableLength` -- bytes (or objects) buffered in the readable side
-- `writableLength` -- bytes (or objects) buffered in the writable side
-- `writableNeedDrain` -- `true` when the writable buffer is full
-- `readableFlowing` -- `null` (no consumer), `false` (paused), `true` (flowing)
+- `readableLength` - bytes (or objects) buffered in the readable side
+- `writableLength` - bytes (or objects) buffered in the writable side
+- `writableNeedDrain` - `true` when the writable buffer is full
+- `readableFlowing` - `null` (no consumer), `false` (paused), `true` (flowing)
 
-Note: `highWaterMark` is a **threshold, not a limit**. Node.js does not enforce it as a hard cap -- buffers can and do temporarily exceed it. The `assertBufferBounded` function uses a multiplier (default 2x) as a heuristic for "something is probably wrong," not as an exact guarantee.
+Note: `highWaterMark` is a **threshold, not a limit**. Node.js does not enforce it as a hard cap - buffers can and do temporarily exceed it. The `assertBufferBounded` function uses a multiplier (default 2x) as a heuristic for "something is probably wrong," not as an exact guarantee.
+
+**Object mode streams**: with `objectMode: true`, `highWaterMark` counts objects (default 16), not bytes. This bites you when each object is large - 16 objects at 10 MB each means 160 MB of buffered data looks "normal" to Node. Watch byte-level memory alongside buffer counts for object mode streams.
 
 ## WeakRef and FinalizationRegistry
 
-For verifying that specific objects are properly released:
+Verify that specific objects get released after you're done with them:
 
 ```typescript
 import { createTracker } from 'memory-watchmen'
@@ -320,16 +340,12 @@ connection = null  // release reference
 await tracker.expectCollected(handle, { timeout: 5000 })
 ```
 
-**Important caveats**:
-- Finalization timing is non-deterministic. Tests using `FinalizationRegistry` can be flaky. Always use generous timeouts and retries.
-- `expectCollected` polls with `forceGC()` at intervals, which is the most reliable approach, but collection is still not guaranteed within any specific timeframe.
-- Do not use this pattern for performance-critical paths -- it's for tests only.
+Caveats:
+- Finalization timing is non-deterministic, so these tests can be flaky. Use generous timeouts.
+- `expectCollected` polls with `forceGC()` at intervals. This is the most reliable approach, but collection still isn't guaranteed within any specific timeframe.
+- Tests only, not for production code paths.
 
-Use cases:
-- Verify connections are released after close
-- Verify event emitters are collected after removeAllListeners
-- Verify request/response objects don't survive beyond their handler
-- Verify stream objects are collected after pipeline completes
+Good for checking that connections are released after close, event emitters are collected after removeAllListeners, request/response objects don't outlive their handler, and streams are collected after pipeline completes.
 
 ## Memory Metrics
 
@@ -359,11 +375,11 @@ console.log(`RSS: ${(sample.rss / 1024 / 1024).toFixed(1)} MB`)
 If RSS grows but `heapUsed` is stable, suspect:
 - **Native addon leaks**: C++ memory not tracked by V8
 - **Unreleased Buffers**: Large Buffers allocated but not dereferenced
-- **Heap fragmentation**: `heapTotal` grows but `heapUsed` is stable -- V8 allocated more heap space but can't compact it
+- **Heap fragmentation**: `heapTotal` grows but `heapUsed` is stable - V8 has expanded the heap and may not immediately return memory to the OS due to fragmentation or heap growth heuristics. Note that fragmented heaps can hit OOM before RSS looks alarming if `--max-old-space-size` is set.
 
 ### Fragmentation
 
-When `heapTotal` grows steadily but `heapUsed` remains constant, the heap is fragmented. V8 allocated memory it can't release back to the OS. This is normal to a degree but can indicate allocation patterns that defeat V8's compaction (e.g., mixing long-lived and short-lived objects in the same heap page).
+`heapTotal` growing while `heapUsed` stays flat means the heap is fragmented. V8 grew the heap and won't immediately give that memory back to the OS, either because of fragmentation or its growth heuristics. Some of this is normal, but it can point to allocation patterns that defeat compaction (e.g., mixing long-lived and short-lived objects on the same heap page).
 
 ## Common Node.js Leak Sources
 
@@ -459,12 +475,22 @@ async function handleRequest(req) {
   await someExternalService(data)  // if this never resolves, `data` is retained forever
 }
 
-// MITIGATION: always use timeouts on external calls
+// MITIGATION: always use timeouts on external calls, and clean up the timer
 import { setTimeout } from 'node:timers/promises'
-await Promise.race([
-  someExternalService(data),
-  setTimeout(30_000).then(() => { throw new Error('Timeout') }),
-])
+const ac = new AbortController()
+try {
+  const result = await Promise.race([
+    someExternalService(data),
+    setTimeout(30_000, undefined, { signal: ac.signal }).then(() => {
+      throw new Error('Timeout')
+    }),
+  ])
+  ac.abort() // cancel the timer if the service call won
+  return result
+} catch (err) {
+  ac.abort()
+  throw err
+}
 ```
 
 ### Module-Level Singletons
@@ -479,13 +505,38 @@ export function handleItem(item: Item) {
 }
 ```
 
+### Unclosed Resources
+
+Sockets, streams, and file handles that aren't closed keep their internal buffers and event listeners alive, even if nothing in your code references them anymore.
+
+```typescript
+// LEAK: file handle stays open, internal buffer retained
+async function readHeader(path: string) {
+  const stream = createReadStream(path)
+  const firstChunk = await new Promise(resolve => stream.once('data', resolve))
+  // stream is never closed - fd and internal buffer leak
+  return parseHeader(firstChunk)
+}
+
+// FIX: always close the stream
+async function readHeader(path: string) {
+  const stream = createReadStream(path)
+  try {
+    const firstChunk = await new Promise(resolve => stream.once('data', resolve))
+    return parseHeader(firstChunk)
+  } finally {
+    stream.destroy()
+  }
+}
+```
+
 ### Native Addon Leaks
 
-Native addons allocate memory outside V8's heap. These leaks are invisible in `heapUsed` -- only `rss` grows. Use process-level RSS monitoring to detect them.
+Native addons allocate outside V8's heap. You won't see these in `heapUsed` - only `rss` grows. Watch RSS to catch them.
 
 ## Debugging Tools
 
-When `monitorHeap` detects a leak but you can't find the source, escalate to deeper tools:
+If `monitorHeap` finds a leak but you can't track down the source, start with `--trace-gc` to see GC frequency and type (`node --trace-gc your-test.js`), then try these:
 
 | Tool | Best for |
 |------|----------|
@@ -496,9 +547,9 @@ When `monitorHeap` detects a leak but you can't find the source, escalate to dee
 
 ### When to Escalate to memlab
 
-Use memory-watchmen for "is the heap stable?" checks. Escalate to memlab when you need to answer "which object leaked and why?"
+memory-watchmen tells you "is the heap stable?" - memlab tells you "which object leaked and why?"
 
-Signs you need memlab:
+When to reach for memlab:
 - Heap monitoring detects a leak but you can't find the source
 - You need to see the retainer chain (what's keeping the object alive)
 - The leak is in browser/DOM code (detached elements, React fibers)
@@ -515,45 +566,45 @@ npx memlab analyze --snapshot heap.heapsnapshot
 
 ## Prior Art and References
 
-The patterns in this library draw on established practices from several Node.js projects and V8 documentation:
+This library builds on patterns from Node.js core, ecosystem projects, and V8 documentation:
 
-- **Double GC and heap sampling** — the pattern of calling `global.gc()` twice and sampling `process.memoryUsage()` at intervals is widely used in Node.js core and ecosystem test suites (notably in undici's TLS and fetch leak tests, and Node.js core's own `test/parallel/` memory tests). Joyee Cheung's [Memory leak testing with V8/Node.js](https://joyeecheung.github.io/blog/2024/03/17/memory-leak-testing-v8-node-js-1/) (parts 1 and 2) provides authoritative background on why this pattern works and its limitations.
+- **Double GC and heap sampling** - the pattern of calling `global.gc()` twice and sampling `process.memoryUsage()` at intervals is widely used in Node.js core and ecosystem test suites (notably in undici's TLS and fetch leak tests, and Node.js core's own `test/parallel/` memory tests). Joyee Cheung's [Memory leak testing with V8/Node.js](https://joyeecheung.github.io/blog/2024/03/17/memory-leak-testing-v8-node-js-1/) (parts 1 and 2) provides authoritative background on why this pattern works and its limitations.
 
-- **WeakRef + FinalizationRegistry for object tracking** — this approach to verifying GC collection is used in Node.js core tests and browser engine test suites. The [V8 blog post on weak references](https://v8.dev/features/weak-references) and [MDN FinalizationRegistry documentation](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/FinalizationRegistry) describe the semantics and caveats.
+- **WeakRef + FinalizationRegistry for object tracking** - this approach to verifying GC collection is used in Node.js core tests and browser engine test suites. The [V8 blog post on weak references](https://v8.dev/features/weak-references) and [MDN FinalizationRegistry documentation](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/FinalizationRegistry) describe the semantics and caveats.
 
-- **Dual-metric leak detection** (monotonic growth + envelope growth) — developed independently in streaming library test suites to catch both tight leaks (every operation grows) and burst/step-wise leaks (periodic growth with partial recovery). The monotonic check descends from simple consecutive-growth counters used in HTTP client tests; the envelope check adds statistical robustness for workloads with variable allocation rates.
+- **Dual-metric leak detection** (monotonic growth + envelope growth) - developed independently in streaming library test suites to catch both tight leaks (every operation grows) and burst/step-wise leaks (periodic growth with partial recovery). The monotonic check descends from simple consecutive-growth counters used in HTTP client tests; the envelope check adds statistical robustness for workloads with variable allocation rates.
 
-- **Stream buffer introspection** — `readableLength`, `writableLength`, `writableNeedDrain`, and `readableFlowing` are documented in the [Node.js Stream API](https://nodejs.org/docs/latest/api/stream.html). The `highWaterMark` semantics (threshold, not limit) are explained in the [Node.js backpressuring guide](https://nodejs.org/en/learn/modules/backpressuring-in-streams).
+- **Stream buffer introspection** - `readableLength`, `writableLength`, `writableNeedDrain`, and `readableFlowing` are documented in the [Node.js Stream API](https://nodejs.org/docs/latest/api/stream.html). The `highWaterMark` semantics (threshold, not limit) are explained in the [Node.js backpressuring guide](https://nodejs.org/en/learn/modules/backpressuring-in-streams).
 
-- **V8 GC internals** — understanding of `global.gc()` behavior (synchronous full GC by default), ephemeron processing, and FinalizationRegistry timing draws on V8 source code and the [V8 Oilpan library blog post](https://v8.dev/blog/oilpan-library). The `process.memoryUsage().arrayBuffers` field was added in Node.js 13.9 via [PR #31550](https://github.com/nodejs/node/pull/31550).
+- **V8 GC internals** - understanding of `global.gc()` behavior (synchronous full GC by default), ephemeron processing, and FinalizationRegistry timing draws on V8 source code and the [V8 Oilpan library blog post](https://v8.dev/blog/oilpan-library). The `process.memoryUsage().arrayBuffers` field was added in Node.js 13.9 via [PR #31550](https://github.com/nodejs/node/pull/31550).
 
-- **Comparative memory profiling** — the HTTP-based profiler with NDJSON streaming and HTML chart generation is inspired by benchmarking patterns common in streaming parser libraries, where comparing peak/baseline/delta across implementations is the primary optimization workflow.
+- **Comparative memory profiling** - the HTTP-based profiler with NDJSON streaming and HTML chart generation is inspired by benchmarking patterns common in streaming parser libraries, where comparing peak/baseline/delta across implementations is the primary optimization workflow.
 
 ## Further Reading
 
 ### V8 Garbage Collection
 
-- [Trash talk: the Orinoco garbage collector](https://v8.dev/blog/trash-talk) — overview of V8's generational GC, Scavenger (young generation), and Mark-Compact (old generation)
-- [Concurrent marking in V8](https://v8.dev/blog/concurrent-marking) — how V8 marks objects concurrently with JavaScript execution
-- [Jank Busters Part Two: Orinoco](https://v8.dev/blog/orinoco) — parallel and concurrent GC techniques in V8
-- [Getting garbage collection for free](https://v8.dev/blog/free-garbage-collection) — idle-time GC scheduling
-- [Weak references and finalizers](https://v8.dev/features/weak-references) — V8's perspective on WeakRef and FinalizationRegistry semantics
+- [Trash talk: the Orinoco garbage collector](https://v8.dev/blog/trash-talk) - overview of V8's generational GC, Scavenger (young generation), and Mark-Compact (old generation)
+- [Concurrent marking in V8](https://v8.dev/blog/concurrent-marking) - how V8 marks objects concurrently with JavaScript execution
+- [Jank Busters Part Two: Orinoco](https://v8.dev/blog/orinoco) - parallel and concurrent GC techniques in V8
+- [Getting garbage collection for free](https://v8.dev/blog/free-garbage-collection) - idle-time GC scheduling
+- [Weak references and finalizers](https://v8.dev/features/weak-references) - V8's perspective on WeakRef and FinalizationRegistry semantics
 
 ### Node.js Memory
 
-- [Memory leak testing with V8/Node.js, Part 1](https://joyeecheung.github.io/blog/2024/03/17/memory-leak-testing-v8-node-js-1/) — authoritative guide on heap snapshot testing patterns, `global.gc()` behavior, and why tests can be flaky (by Node.js core contributor Joyee Cheung)
-- [Memory leak testing with V8/Node.js, Part 2](https://joyeecheung.github.io/blog/2024/03/17/memory-leak-testing-v8-node-js-2/) — FinalizationRegistry-based testing, `gcUntil()` patterns, and limitations of current approaches
-- [Node.js: Understanding and Tuning Memory](https://nodejs.org/en/learn/diagnostics/memory/understanding-and-tuning-memory) — official guide to `--max-old-space-size`, heap limits, and memory diagnostics
-- [Node.js Diagnostics: Memory](https://nodejs.org/en/learn/diagnostics/memory) — official overview of memory debugging tools and techniques
-- [Backpressuring in Streams](https://nodejs.org/en/learn/modules/backpressuring-in-streams) — official guide to how `highWaterMark`, `write()` return value, and `'drain'` work together
+- [Memory leak testing with V8/Node.js, Part 1](https://joyeecheung.github.io/blog/2024/03/17/memory-leak-testing-v8-node-js-1/) - authoritative guide on heap snapshot testing patterns, `global.gc()` behavior, and why tests can be flaky (by Node.js core contributor Joyee Cheung)
+- [Memory leak testing with V8/Node.js, Part 2](https://joyeecheung.github.io/blog/2024/03/17/memory-leak-testing-v8-node-js-2/) - FinalizationRegistry-based testing, `gcUntil()` patterns, and limitations of current approaches
+- [Node.js: Understanding and Tuning Memory](https://nodejs.org/en/learn/diagnostics/memory/understanding-and-tuning-memory) - official guide to `--max-old-space-size`, heap limits, and memory diagnostics
+- [Node.js Diagnostics: Memory](https://nodejs.org/en/learn/diagnostics/memory) - official overview of memory debugging tools and techniques
+- [Backpressuring in Streams](https://nodejs.org/en/learn/modules/backpressuring-in-streams) - official guide to how `highWaterMark`, `write()` return value, and `'drain'` work together
 
 ### Heap Snapshot Analysis
 
-- [Chrome DevTools: Memory panel](https://developer.chrome.com/docs/devtools/memory) — using allocation timelines, heap snapshots, and retainer views
-- [memlab documentation](https://facebook.github.io/memlab/) — automated heap snapshot diffing, retainer trace analysis, and React-specific leak detection
+- [Chrome DevTools: Memory panel](https://developer.chrome.com/docs/devtools/memory) - using allocation timelines, heap snapshots, and retainer views
+- [memlab documentation](https://facebook.github.io/memlab/) - automated heap snapshot diffing, retainer trace analysis, and React-specific leak detection
 
 ### FinalizationRegistry and WeakRef
 
-- [MDN: FinalizationRegistry](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/FinalizationRegistry) — API reference with caveats about non-deterministic cleanup timing
-- [MDN: WeakRef](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakRef) — API reference with guidance on when (and when not) to use weak references
-- [TC39 WeakRefs proposal](https://github.com/tc39/proposal-weakrefs) — the specification rationale, including why cleanup callbacks are intentionally non-deterministic
+- [MDN: FinalizationRegistry](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/FinalizationRegistry) - API reference with caveats about non-deterministic cleanup timing
+- [MDN: WeakRef](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakRef) - API reference with guidance on when (and when not) to use weak references
+- [TC39 WeakRefs proposal](https://github.com/tc39/proposal-weakrefs) - the specification rationale, including why cleanup callbacks are intentionally non-deterministic

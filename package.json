@@ -43,7 +43,7 @@
     "build": "tsc",
     "test": "vitest run",
     "test:memory": "vitest run --config vitest.memory.config.ts",
-    "lint": "oxlint && tsc --noEmit",
+    "lint": "oxlint && tsc --noEmit -p tsconfig.check.json",
     "lint:fix": "oxlint --fix",
     "prepublishOnly": "npm run build"
   },
