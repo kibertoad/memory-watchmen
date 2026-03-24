@@ -8,6 +8,12 @@ export {
   assertDrainOccurred,
   assertFlowing,
 } from './stream-assertions.ts'
+export {
+  monitorEventLoop,
+  formatEventLoopResult,
+  collectDelaySample,
+  collectUtilizationSample,
+} from './event-loop-monitor.ts'
 
 export type {
   MemorySample,
@@ -28,4 +34,10 @@ export type {
   RunProfilesConfig,
   AssertNoLeakOptions,
   HeapMonitorContext,
+  EventLoopDelaySample,
+  EventLoopUtilizationSample,
+  EventLoopMonitorOptions,
+  EventLoopMonitorResult,
+  EventLoopMonitorContext,
+  AssertNoStarvationOptions,
 } from './types.ts'

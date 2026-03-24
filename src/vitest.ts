@@ -1,7 +1,17 @@
 import { setTimeout as sleep } from 'node:timers/promises'
 
+import { formatEventLoopResult, monitorEventLoop } from './event-loop-monitor.ts'
 import { forceGC, formatHeapResult, monitorHeap } from './heap-monitor.ts'
-import type { AssertNoLeakOptions, HeapMonitorContext, HeapMonitorOptions, HeapMonitorResult } from './types.ts'
+import type {
+  AssertNoLeakOptions,
+  AssertNoStarvationOptions,
+  EventLoopMonitorContext,
+  EventLoopMonitorOptions,
+  EventLoopMonitorResult,
+  HeapMonitorContext,
+  HeapMonitorOptions,
+  HeapMonitorResult,
+} from './types.ts'
 
 /**
  * Run a function and assert it does not leak memory.
@@ -76,6 +86,80 @@ export async function withHeapMonitor(
   await sleep(warmUpMs)
 
   const result = await monitorHeap(options)
+
+  ctx.stopped.value = true
+
+  return result
+}
+
+/**
+ * Run a function and assert it does not starve the event loop.
+ *
+ * Starts the workload, waits for warm-up, then monitors event loop delay
+ * and utilization. Throws with a descriptive message if starvation is detected.
+ *
+ * The function `fn` should set up a sustained workload that continues
+ * running during the monitoring period. It receives a context object with
+ * a `stopped` flag — check it to know when to stop.
+ *
+ * @example
+ * ```ts
+ * await assertNoStarvation(async (ctx) => {
+ *   while (!ctx.stopped.value) {
+ *     doCpuWork()
+ *     await new Promise(resolve => setImmediate(resolve))
+ *   }
+ * })
+ * ```
+ */
+export async function assertNoStarvation(
+  fn: (ctx: EventLoopMonitorContext) => Promise<void> | void,
+  options?: AssertNoStarvationOptions,
+): Promise<EventLoopMonitorResult> {
+  const warmUpMs = options?.warmUpMs ?? 1000
+
+  const ctx: EventLoopMonitorContext = { stopped: { value: false } }
+
+  await fn(ctx)
+  await sleep(warmUpMs)
+
+  const result = await monitorEventLoop(options)
+
+  ctx.stopped.value = true
+
+  if (!result.passed) {
+    throw new Error(formatEventLoopResult(result))
+  }
+
+  return result
+}
+
+/**
+ * Wrap a test function with event loop monitoring.
+ *
+ * Returns the EventLoopMonitorResult for further assertions. Does NOT throw
+ * on failure — the caller decides how to assert.
+ *
+ * @example
+ * ```ts
+ * const result = await withEventLoopMonitor(async (ctx) => {
+ *   startProcessing()
+ * })
+ * expect(result.passed, formatEventLoopResult(result, 'processing')).toBe(true)
+ * ```
+ */
+export async function withEventLoopMonitor(
+  testFn: (ctx: EventLoopMonitorContext) => Promise<void> | void,
+  options?: EventLoopMonitorOptions & { warmUpMs?: number },
+): Promise<EventLoopMonitorResult> {
+  const warmUpMs = options?.warmUpMs ?? 1000
+
+  const ctx: EventLoopMonitorContext = { stopped: { value: false } }
+
+  await testFn(ctx)
+  await sleep(warmUpMs)
+
+  const result = await monitorEventLoop(options)
 
   ctx.stopped.value = true
 
