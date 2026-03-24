@@ -159,4 +159,36 @@ describe('withEventLoopMonitor', () => {
 
     expect(result.passed).toBe(true)
   })
+
+  it('captures delay from heavy blocking workload using while loop', async () => {
+    // Regression: blocking for much longer than sampleIntervalMs would produce
+    // count: 0 samples due to a timer race condition. The setImmediate yield
+    // in monitorEventLoop now ensures the histogram timer fires before reading.
+    const items = Array.from({ length: 500 }, (_, i) => i)
+
+    const result = await withEventLoopMonitor(
+      async (ctx) => {
+        while (!ctx.stopped.value) {
+          // Block for ~1000ms (500 items × 2ms)
+          for (const _item of items) {
+            const end = Date.now() + 2
+            while (Date.now() < end) { /* busy */ }
+          }
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+      },
+      {
+        warmUpMs: 200,
+        sampleCount: 4,
+        sampleIntervalMs: 300,
+        maxMeanDelayMs: null,
+        maxP99DelayMs: null,
+        maxUtilization: null,
+      },
+    )
+
+    const totalCount = result.delaySamples.reduce((sum, s) => sum + s.count, 0)
+    expect(totalCount).toBeGreaterThan(0)
+    expect(result.peakP99DelayMs).toBeGreaterThan(200)
+  })
 })

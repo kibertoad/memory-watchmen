@@ -75,6 +75,13 @@ export async function monitorEventLoop(options?: EventLoopMonitorOptions): Promi
   for (let i = 0; i < sampleCount; i++) {
     await sleep(sampleIntervalMs)
 
+    // Yield to let the histogram's internal timer fire before reading.
+    // When the event loop is heavily blocked, the monitoring setTimeout and
+    // histogram timer are both overdue. The setTimeout resolves first (as a
+    // microtask), and without this yield we'd read the histogram before its
+    // timer has recorded the blocking delay — producing count: 0 samples.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
     // Delay sample — read and reset
     const delaySample = collectDelaySample(histogram)
     delaySamples.push(delaySample)
