@@ -163,12 +163,12 @@ Node.js (14+) provides `perf_hooks.monitorEventLoopDelay()`, a histogram-based s
 
 **How it works under blocking conditions**: The histogram's internal timer is scheduled at `resolution` intervals. When the event loop is blocked (e.g., by a 200ms CPU-bound operation), the timer can't fire until the block ends and the event loop resumes. When it finally fires, it records the full blocking duration (~200ms) as a single measurement. This means even one yield (via `setImmediate`) between blocking periods is enough to capture the delay — you don't need frequent yields for accurate measurement.
 
-**Important**: The workload being monitored must yield periodically (e.g., via `setImmediate`) for the histogram to record any measurements at all. A workload that never yields produces `count: 0` samples with `NaN` mean — because the histogram's timer never gets a chance to fire. This is not a limitation of the tool; a workload that never yields also hangs the process entirely. Any practical starvation test must include yields, and those yields are sufficient for the histogram to capture blocking duration.
+**Important**: The workload being monitored must yield periodically (e.g., via `setImmediate`) for the histogram to record any measurements at all. A workload that never yields hangs the process entirely — including the monitoring infrastructure. Any practical starvation test must include yields, and those yields are sufficient for the histogram to capture blocking duration.
 
 Key properties:
 - **Resolution**: configurable in milliseconds (default 20ms). Lower resolution = finer-grained measurements but more overhead.
 - **Percentiles**: p50, p99, min, max, mean — the histogram records values in nanoseconds. p99 is the most useful for starvation detection because occasional GC pauses inflate max but are normal.
-- **Count**: number of delay measurements in the sample period. A count of 0 means the event loop was blocked for the entire sample interval — the workload is not yielding.
+- **Count**: number of delay measurements in the sample period.
 
 ```typescript
 import { monitorEventLoopDelay } from 'node:perf_hooks'
@@ -253,6 +253,10 @@ A placebo test pairs each starvation test with a matching workload that does the
 
 Use **identical thresholds** for both the positive and placebo tests. If the same bar passes for the library and fails for the raw loop, you've proven that the bar discriminates between the two — a stronger proof than using different thresholds.
 
+#### Step 1: Calibrate
+
+Run both workloads with all thresholds disabled to measure the actual signals:
+
 ```typescript
 const items = Array.from({ length: 10_000 }, (_, i) => i)
 function cpuBurn(item: number) {
@@ -260,14 +264,64 @@ function cpuBurn(item: number) {
   while (Date.now() < end) { /* busy */ }
 }
 
-// Same config for both positive and placebo — proves the threshold discriminates
+const calibrationOpts = {
+  warmUpMs: 200,
+  sampleCount: 6,
+  sampleIntervalMs: 300,
+  maxP99DelayMs: null,
+  maxMeanDelayMs: null,
+  maxUtilization: null,
+}
+
+it('calibrate: library signal', async () => {
+  const result = await withEventLoopMonitor(async (ctx) => {
+    while (!ctx.stopped.value) {
+      await executeChunksWithYielding(items, cpuBurn)
+    }
+  }, calibrationOpts)
+  console.log('library p99:', result.peakP99DelayMs, 'mean:', result.peakMeanDelayMs)
+})
+
+it('calibrate: raw loop signal', async () => {
+  const result = await withEventLoopMonitor(async (ctx) => {
+    while (!ctx.stopped.value) {
+      for (const item of items) { cpuBurn(item) }
+      await new Promise(resolve => setImmediate(resolve))
+    }
+  }, calibrationOpts)
+  console.log('raw loop p99:', result.peakP99DelayMs, 'mean:', result.peakMeanDelayMs)
+})
+```
+
+Run calibration on both your dev machine and CI. Typical results:
+
+| | Dev machine | Slow CI (2–4x) |
+|---|---|---|
+| Library p99 | ~33ms | ~70–130ms |
+| Raw loop p99 | ~110ms | ~220–440ms |
+| Library mean | ~20ms | ~40–80ms |
+| Raw loop mean | ~100ms | ~200–400ms |
+
+#### Step 2: Pick thresholds in the gap
+
+The threshold must sit above the worst-case library signal (slow CI) and below the best-case raw loop signal (fast dev machine):
+
+```
+library worst case (slow CI)  <  threshold  <  raw loop best case (local)
+```
+
+**Use mean delay as the primary discriminator, not p99.** Mean delay scales proportionally with machine speed and maintains a wide gap between signals. p99 is noisier — on slow CI, the library's p99 can overlap with the raw loop's local p99, making it unreliable as a discriminator.
+
+#### Step 3: Write the tests
+
+```typescript
+// Same config for both positive and placebo
 const monitorOpts = {
   warmUpMs: 200,
   sampleCount: 6,
   sampleIntervalMs: 300,
-  maxP99DelayMs: 200,
-  maxMeanDelayMs: 100,
-  maxUtilization: null, // busy-but-responsive
+  maxMeanDelayMs: 150,   // between library (~20–80ms) and raw loop (~100–400ms)
+  maxUtilization: null,   // both workloads show ~100% — can't discriminate
 }
 
 // Positive: with the library's chunked execution → should pass
@@ -292,13 +346,15 @@ it('placebo: raw loop starves the event loop', async () => {
 })
 ```
 
-**The placebo must yield via `setImmediate` between batches.** Without yields, the histogram's internal timer never fires, producing `count: 0` samples with no delay data. This is not a flaw — it just means the workload blocked the entire process including the measurement infrastructure. The `setImmediate` yield gives the histogram one chance per batch to record the blocking duration, which is all it needs. The yield itself adds negligible time (<1ms) compared to the blocking work, so it doesn't meaningfully reduce the starvation signal.
+#### Why this works
+
+**The placebo must yield via `setImmediate` between batches.** Without yields, the workload blocks the process entirely — including the monitoring infrastructure. The `setImmediate` yield gives the histogram one chance per batch to record the full blocking duration, which is all it needs. The yield itself adds negligible time (<1ms) compared to the blocking work, so it doesn't meaningfully reduce the starvation signal.
 
 The key difference between the positive and placebo tests is *where* the yielding happens:
-- **Positive test**: the library yields *within* each batch (between chunks), keeping individual blocking periods short → low p99 delay
-- **Placebo test**: `setImmediate` yields only *between* full batches, so each batch blocks for its entire duration → high p99 delay
+- **Positive test**: the library yields *within* each batch (between chunks), keeping individual blocking periods short → low mean delay
+- **Placebo test**: `setImmediate` yields only *between* full batches, so each batch blocks for its entire duration → high mean delay
 
-Use `sampleCount: 6` and `sampleIntervalMs: 300` or higher for placebo tests — shorter monitoring windows may produce `count: 0` samples because the histogram's internal timers don't get enough chances to fire between blocking passes.
+**If the gap between the two signals is less than 4x, make the workload heavier.** More items or longer CPU work per item widens the gap because the library yields more frequently relative to the total work.
 
 ## Profiler Workflow
 

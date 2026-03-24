@@ -168,6 +168,43 @@ describe('monitorEventLoop', () => {
     // Metrics are still collected even when checks are disabled
     expect(result.peakP99DelayMs).toBeGreaterThan(0)
   })
+
+  it('captures delay from long blocking workloads that yield via setImmediate', async () => {
+    // Regression: when the event loop is blocked for much longer than sampleIntervalMs,
+    // the monitoring timer and histogram timer are both overdue. Without the setImmediate
+    // yield before reading, the monitoring timer's microtask would read and reset the
+    // histogram before the histogram timer fired — producing count: 0 samples.
+    const items = Array.from({ length: 200 }, (_, i) => i)
+    let running = true
+
+    const work = async () => {
+      while (running) {
+        // Block for ~400ms (200 items × 2ms)
+        for (const item of items) {
+          const end = Date.now() + 2
+          while (Date.now() < end) { /* busy */ }
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+    }
+    const p = work()
+
+    const result = await monitorEventLoop({
+      sampleCount: 4,
+      sampleIntervalMs: 200,
+      maxP99DelayMs: null,
+      maxMeanDelayMs: null,
+      maxUtilization: null,
+    })
+
+    running = false
+    await p
+
+    // At least some samples must have captured the blocking delay
+    const totalCount = result.delaySamples.reduce((sum, s) => sum + s.count, 0)
+    expect(totalCount).toBeGreaterThan(0)
+    expect(result.peakP99DelayMs).toBeGreaterThan(100)
+  })
 })
 
 describe('collectDelaySample', () => {
