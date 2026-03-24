@@ -18,6 +18,7 @@ Best practices and patterns for detecting memory leaks, optimizing memory usage,
   - [When Delay vs Utilization Matters](#when-delay-vs-utilization-matters)
   - [Starvation vs Saturation](#starvation-vs-saturation)
   - [Mixed Sync/Async Workloads](#mixed-syncasync-workloads)
+  - [Testing Finite Async Workloads](#testing-finite-async-workloads)
   - [Placebo-Controlled Testing](#placebo-controlled-testing)
 - [Profiler Workflow](#profiler-workflow)
 - [Forking, Workers, and --expose-gc](#forking-workers-and---expose-gc)
@@ -246,6 +247,39 @@ Workloads that alternate between synchronous and asynchronous operations will sh
 3. Each async-to-sync transition involves scheduling overhead
 
 Expect p99 delays of ~60–100ms for mixed workloads vs ~30ms for pure sync workloads of equivalent CPU cost. Adjust thresholds accordingly — this is inherent to the async machinery, not a sign of starvation.
+
+### Testing Finite Async Workloads
+
+The examples above all show tight CPU-bound loops, but the most common real-world use case is testing that a **finite async operation** (file parser, streaming pipeline, database query) doesn't starve the event loop when run repeatedly.
+
+```typescript
+// WRONG — may appear to hang after monitoring completes
+await assertNoStarvation(async (ctx) => {
+  while (!ctx.stopped.value) {
+    await parseLargeFile(input)  // takes 5+ seconds per call
+  }
+}, monitorOpts)
+```
+
+This has two problems:
+1. **No yield between iterations.** After `parseLargeFile` resolves, the `while` loop immediately starts the next call. `ctx.stopped.value` is checked at the top of each iteration, but if the operation itself doesn't yield internally, the check doesn't help.
+2. **Slow shutdown.** After monitoring completes and `ctx.stopped.value` is set to `true`, the helper awaits the workload promise. But the workload is mid-operation — the current `parseLargeFile` call must finish before the loop can check `ctx.stopped.value` and exit. If each call takes 5 seconds, the test appears to hang for up to 5 seconds after monitoring ends.
+
+The fix: yield between iterations so the stopped signal is checked promptly, and accept that the final in-flight operation must complete:
+
+```typescript
+await assertNoStarvation(async (ctx) => {
+  while (!ctx.stopped.value) {
+    await parseLargeFile(input)
+    // Yield between iterations — allows ctx.stopped.value to take effect
+    await new Promise(resolve => setImmediate(resolve))
+  }
+}, monitorOpts)
+```
+
+If each operation takes a long time, also consider:
+- **Increasing `testTimeout`** in your test config to accommodate the shutdown delay
+- **Using a smaller input** that still exercises the same code path but completes faster — the monitoring only needs the workload to run during the sampling window, not process the entire dataset
 
 ### Placebo-Controlled Testing
 
