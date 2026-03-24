@@ -16,7 +16,7 @@ describe('snapshotStreamState', () => {
     const snap = snapshotStreamState(readable)
 
     expect(snap.readableLength).toBe(0)
-    expect(snap.readableHighWaterMark).toBe(16384)
+    expect(snap.readableHighWaterMark).toBe(readable.readableHighWaterMark)
     expect(snap.readableFlowing).toBeNull() // no consumer attached
     expect(snap.writableLength).toBeUndefined()
   })
@@ -26,7 +26,7 @@ describe('snapshotStreamState', () => {
     const snap = snapshotStreamState(writable)
 
     expect(snap.writableLength).toBe(0)
-    expect(snap.writableHighWaterMark).toBe(16384)
+    expect(snap.writableHighWaterMark).toBe(writable.writableHighWaterMark)
     expect(snap.readableLength).toBeUndefined()
   })
 

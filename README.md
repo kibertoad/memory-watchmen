@@ -84,6 +84,7 @@ Dual-metric leak detection over time:
 2. **Envelope growth** - first-third avg vs last-third avg exceeds threshold (step-wise/burst leaks)
 
 Options (all optional):
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `sampleCount` | 15 | Number of monitoring samples |
@@ -109,18 +110,28 @@ Monitors event loop delay and utilization over time using `perf_hooks.monitorEve
 
 Two complementary checks:
 
-1. **Delay** — p99 and mean event loop delay stay under thresholds (catches blocking code)
-2. **Utilization** — event loop active ratio stays under saturation threshold (catches CPU saturation)
+1. **Delay** — p99 and mean event loop delay stay under thresholds (catches blocking code that starves the event loop)
+2. **Utilization** — event loop active ratio stays under saturation threshold (catches CPU saturation — set to `null` to disable for workloads that are intentionally busy but responsive)
 
 Options (all optional):
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `sampleCount` | 20 | Number of monitoring samples |
 | `sampleIntervalMs` | 500 | Milliseconds between samples |
 | `resolution` | 20 | Histogram resolution in nanoseconds |
-| `maxP99DelayMs` | 100 | Max p99 delay before starvation |
-| `maxMeanDelayMs` | 50 | Max mean delay before starvation |
-| `maxUtilization` | 0.95 | Max utilization (0–1) before saturation |
+| `maxP99DelayMs` | 100 | Max p99 delay before starvation. Set to `null` to disable. |
+| `maxMeanDelayMs` | 50 | Max mean delay before starvation. Set to `null` to disable. |
+| `maxUtilization` | 0.95 | Max utilization (0–1) before saturation. Set to `null` to disable. |
+
+Set any threshold to `null` to disable that specific check while keeping the others active. This is useful for workloads that are intentionally busy but responsive (high utilization, low delay):
+
+```typescript
+const result = await monitorEventLoop({
+  maxP99DelayMs: 50,
+  maxUtilization: null, // don't flag high utilization — only check delay
+})
+```
 
 Returns `EventLoopMonitorResult` with `passed: boolean` and diagnostic fields including per-sample delay histograms and utilization ratios.
 
@@ -229,33 +240,46 @@ import {
 } from 'memory-watchmen/vitest'
 ```
 
+All test helpers run the workload function **concurrently** with monitoring. The execution model:
+
+1. Your function `fn(ctx)` starts running (not awaited — it runs in the background)
+2. Warm-up period elapses
+3. Monitoring collects samples
+4. `ctx.stopped.value` is set to `true` — signalling your workload to stop
+5. The helper awaits your function's promise to let it clean up
+
+This means `fn` can use `while (!ctx.stopped.value)` loops with `await` inside — they will exit naturally when monitoring completes. The `assert*` variants throw on failure; the `with*` variants return the result for custom assertions.
+
 #### `assertNoLeak(fn, options?)`
 
-Runs a function and asserts it doesn't leak. Throws with a diagnostic message on failure.
+Runs a function and asserts it doesn't leak. Throws with a diagnostic message on failure. The workload runs concurrently with monitoring — check `ctx.stopped.value` to know when to stop.
 
 ```typescript
 await assertNoLeak(async (ctx) => {
-  const interval = setInterval(() => {
-    if (ctx.stopped.value) { clearInterval(interval); return }
+  while (!ctx.stopped.value) {
     doWork()
-  }, 10)
+    await sleep(10)
+  }
 })
 ```
 
 #### `withHeapMonitor(testFn, options?): Promise<HeapMonitorResult>`
 
-Wraps a test function with heap monitoring. Does NOT throw - returns the result for custom assertions.
+Wraps a test function with heap monitoring. Does NOT throw — returns the result for custom assertions.
 
 ```typescript
 const result = await withHeapMonitor(async (ctx) => {
-  startStreaming()
+  while (!ctx.stopped.value) {
+    doWork()
+    await sleep(10)
+  }
 })
 expect(result.passed, formatHeapResult(result, 'streaming')).toBe(true)
 ```
 
 #### `assertNoStarvation(fn, options?)`
 
-Runs a function and asserts it doesn't starve the event loop. Throws with a diagnostic message if p99 delay, mean delay, or utilization exceed thresholds.
+Runs a function and asserts it doesn't starve the event loop. Throws with a diagnostic message if p99 delay, mean delay, or utilization exceed thresholds. The workload runs concurrently with monitoring — check `ctx.stopped.value` to know when to stop.
 
 ```typescript
 await assertNoStarvation(async (ctx) => {
@@ -263,7 +287,7 @@ await assertNoStarvation(async (ctx) => {
     doCpuWork()
     await new Promise(resolve => setImmediate(resolve))
   }
-}, { maxP99DelayMs: 50 })
+}, { maxP99DelayMs: 50, maxUtilization: null })
 ```
 
 Does not require `--expose-gc` — uses `perf_hooks` APIs that work in any Node.js process.
@@ -274,8 +298,11 @@ Wraps a test function with event loop monitoring. Does NOT throw — returns the
 
 ```typescript
 const result = await withEventLoopMonitor(async (ctx) => {
-  startProcessing()
-})
+  while (!ctx.stopped.value) {
+    doCpuWork()
+    await new Promise(resolve => setImmediate(resolve))
+  }
+}, { maxUtilization: null })
 expect(result.passed, formatEventLoopResult(result, 'processing')).toBe(true)
 ```
 
@@ -400,8 +427,8 @@ export default defineConfig({
 })
 ```
 
+package.json scripts:
 ```json
-// package.json scripts
 {
   "test:memory": "vitest run --config vitest.memory.config.ts"
 }

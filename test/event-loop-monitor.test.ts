@@ -133,6 +133,41 @@ describe('monitorEventLoop', () => {
       maxUtilization: 0.95,
     })
   })
+
+  it('skips checks for null thresholds', async () => {
+    // Start a blocking workload that would normally fail all checks
+    let blocking = true
+    const blockLoop = () => {
+      if (!blocking) return
+      const end = Date.now() + 30
+      while (Date.now() < end) { /* busy wait */ }
+      setImmediate(blockLoop)
+    }
+    setImmediate(blockLoop)
+
+    const result = await monitorEventLoop({
+      sampleCount: 5,
+      sampleIntervalMs: 200,
+      maxP99DelayMs: null,
+      maxMeanDelayMs: null,
+      maxUtilization: null,
+    })
+
+    blocking = false
+
+    // All checks disabled — should pass regardless of actual values
+    expect(result.passed).toBe(true)
+    expect(result.p99DelayExceeded).toBe(false)
+    expect(result.meanDelayExceeded).toBe(false)
+    expect(result.utilizationExceeded).toBe(false)
+    expect(result.thresholds).toEqual({
+      maxP99DelayMs: null,
+      maxMeanDelayMs: null,
+      maxUtilization: null,
+    })
+    // Metrics are still collected even when checks are disabled
+    expect(result.peakP99DelayMs).toBeGreaterThan(0)
+  })
 })
 
 describe('collectDelaySample', () => {
