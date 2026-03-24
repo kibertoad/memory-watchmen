@@ -96,15 +96,18 @@ export async function monitorEventLoop(options?: EventLoopMonitorOptions): Promi
 
   histogram.disable()
 
-  // Compute aggregates
-  const peakP99DelayMs = delaySamples.length > 0
-    ? Math.max(...delaySamples.map((s) => s.p99))
+  // Compute aggregates — filter out samples with count: 0 (no measurements).
+  // The first sample often has count: 0 because the histogram timer hasn't
+  // fired yet. NaN from empty samples would poison Math.max and averages.
+  const validDelaySamples = delaySamples.filter((s) => s.count > 0)
+  const peakP99DelayMs = validDelaySamples.length > 0
+    ? Math.max(...validDelaySamples.map((s) => s.p99))
     : 0
-  const peakMeanDelayMs = delaySamples.length > 0
-    ? Math.max(...delaySamples.map((s) => s.mean))
+  const peakMeanDelayMs = validDelaySamples.length > 0
+    ? Math.max(...validDelaySamples.map((s) => s.mean))
     : 0
-  const meanP99DelayMs = delaySamples.length > 0
-    ? delaySamples.reduce((sum, s) => sum + s.p99, 0) / delaySamples.length
+  const meanP99DelayMs = validDelaySamples.length > 0
+    ? validDelaySamples.reduce((sum, s) => sum + s.p99, 0) / validDelaySamples.length
     : 0
   const peakUtilization = utilizationSamples.length > 0
     ? Math.max(...utilizationSamples.map((s) => s.utilization))

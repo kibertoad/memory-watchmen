@@ -204,6 +204,12 @@ describe('monitorEventLoop', () => {
     const totalCount = result.delaySamples.reduce((sum, s) => sum + s.count, 0)
     expect(totalCount).toBeGreaterThan(0)
     expect(result.peakP99DelayMs).toBeGreaterThan(100)
+
+    // Regression: empty samples (count: 0) produce mean: NaN. Math.max(NaN, ...)
+    // returns NaN, which poisoned peakMeanDelayMs and caused false passes.
+    // Aggregates must be computed from valid samples only.
+    expect(Number.isFinite(result.peakMeanDelayMs)).toBe(true)
+    expect(result.peakMeanDelayMs).toBeGreaterThan(100)
   })
 })
 
