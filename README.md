@@ -70,7 +70,7 @@ import { forceGC, collectMemorySample, monitorHeap, formatHeapResult } from 'mem
 
 Double-pass garbage collection. Requires `--expose-gc` flag. Throws a clear error if unavailable.
 
-Why double GC? `FinalizationRegistry` callbacks run asynchronously after GC, and V8 deferred tasks (weak callback processing, dead ephemeron cleanup) may not complete in a single cycle. Two calls empirically produce more stable readings. See [PATTERNS.md](./PATTERNS.md#why-double-gc) for details.
+Why double GC? `FinalizationRegistry` callbacks run asynchronously after GC, and V8 deferred tasks (weak callback processing, dead ephemeron cleanup) may not complete in a single cycle. Two calls empirically produce more stable readings. See [PATTERNS.md](./PATTERNS.md#why-call-gc-twice) for details.
 
 #### `collectMemorySample(): MemorySample`
 
