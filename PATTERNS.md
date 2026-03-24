@@ -279,12 +279,10 @@ it('does not starve with chunked execution', async () => {
 // Placebo: same work, no yielding → should fail
 it('placebo: raw loop starves the event loop', async () => {
   const result = await withEventLoopMonitor(async (ctx) => {
-    function loop() {
-      if (ctx.stopped.value) return
+    while (!ctx.stopped.value) {
       for (const item of items) { cpuBurn(item) }
-      setImmediate(loop) // yield between batches so monitoring can measure
+      await new Promise<void>(resolve => setImmediate(resolve)) // yield between batches so monitoring can measure
     }
-    loop()
   }, { ...monitorOpts, maxP99DelayMs: 10, maxMeanDelayMs: 5 })
 
   expect(result.passed).toBe(false)
