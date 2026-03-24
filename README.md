@@ -70,7 +70,7 @@ import { forceGC, collectMemorySample, monitorHeap, formatHeapResult } from 'mem
 
 Double-pass garbage collection. Requires `--expose-gc` flag. Throws a clear error if unavailable.
 
-Why double GC? `FinalizationRegistry` callbacks run asynchronously after GC, and V8 deferred tasks (weak callback processing, dead ephemeron cleanup) may not complete in a single cycle. Two calls empirically produce more stable readings. See [PATTERNS.md](./PATTERNS.md#why-double-gc) for details.
+Why double GC? `FinalizationRegistry` callbacks run asynchronously after GC, and V8 deferred tasks (weak callback processing, dead ephemeron cleanup) may not complete in a single cycle. Two calls empirically produce more stable readings. See [PATTERNS.md](./PATTERNS.md#why-call-gc-twice) for details.
 
 #### `collectMemorySample(): MemorySample`
 
@@ -119,7 +119,7 @@ Options (all optional):
 |--------|---------|-------------|
 | `sampleCount` | 20 | Number of monitoring samples |
 | `sampleIntervalMs` | 500 | Milliseconds between samples |
-| `resolution` | 20 | Histogram resolution in nanoseconds |
+| `resolution` | 20 | Histogram resolution in milliseconds |
 | `maxP99DelayMs` | 100 | Max p99 delay before starvation. Set to `null` to disable. |
 | `maxMeanDelayMs` | 50 | Max mean delay before starvation. Set to `null` to disable. |
 | `maxUtilization` | 0.95 | Max utilization (0–1) before saturation. Set to `null` to disable. |

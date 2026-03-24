@@ -11,6 +11,14 @@ Best practices and patterns for detecting memory leaks, optimizing memory usage,
 - [Sample Count and Interval Tuning](#sample-count-and-interval-tuning)
 - [CI Considerations](#ci-considerations)
 - [Event Loop Delay and Utilization](#event-loop-delay-and-utilization)
+  - [Why Monitor the Event Loop?](#why-monitor-the-event-loop)
+  - [Event Loop Delay](#event-loop-delay-monitoreventloopdelay)
+  - [Event Loop Utilization](#event-loop-utilization-performanceeventlooputilization)
+  - [CI Considerations for Timing-Sensitive Tests](#ci-considerations-for-timing-sensitive-tests)
+  - [When Delay vs Utilization Matters](#when-delay-vs-utilization-matters)
+  - [Starvation vs Saturation](#starvation-vs-saturation)
+  - [Mixed Sync/Async Workloads](#mixed-syncasync-workloads)
+  - [Placebo-Controlled Testing](#placebo-controlled-testing)
 - [Profiler Workflow](#profiler-workflow)
 - [Forking, Workers, and --expose-gc](#forking-workers-and---expose-gc)
 - [Stream Backpressure Testing](#stream-backpressure-testing)
@@ -153,10 +161,14 @@ Two complementary metrics:
 
 Node.js (14+) provides `perf_hooks.monitorEventLoopDelay()`, a histogram-based sampler that measures how long the event loop was blocked between turns. It uses a libuv timer internally — each time the timer fires, the elapsed time since it was expected to fire is recorded as the delay.
 
+**How it works under blocking conditions**: The histogram's internal timer is scheduled at `resolution` intervals. When the event loop is blocked (e.g., by a 200ms CPU-bound operation), the timer can't fire until the block ends and the event loop resumes. When it finally fires, it records the full blocking duration (~200ms) as a single measurement. This means even one yield (via `setImmediate`) between blocking periods is enough to capture the delay — you don't need frequent yields for accurate measurement.
+
+**Important**: The workload being monitored must yield periodically (e.g., via `setImmediate`) for the histogram to record any measurements at all. A workload that never yields produces `count: 0` samples with `NaN` mean — because the histogram's timer never gets a chance to fire. This is not a limitation of the tool; a workload that never yields also hangs the process entirely. Any practical starvation test must include yields, and those yields are sufficient for the histogram to capture blocking duration.
+
 Key properties:
-- **Resolution**: configurable (default 20ns). Lower resolution = finer-grained measurements but more overhead.
-- **Percentiles**: p50, p99, min, max, mean — all in nanoseconds. p99 is the most useful for starvation detection because occasional GC pauses inflate max but are normal.
-- **Count**: number of delay measurements in the sample period.
+- **Resolution**: configurable in milliseconds (default 20ms). Lower resolution = finer-grained measurements but more overhead.
+- **Percentiles**: p50, p99, min, max, mean — the histogram records values in nanoseconds. p99 is the most useful for starvation detection because occasional GC pauses inflate max but are normal.
+- **Count**: number of delay measurements in the sample period. A count of 0 means the event loop was blocked for the entire sample interval — the workload is not yielding.
 
 ```typescript
 import { monitorEventLoopDelay } from 'node:perf_hooks'
@@ -234,6 +246,54 @@ Workloads that alternate between synchronous and asynchronous operations will sh
 3. Each async-to-sync transition involves scheduling overhead
 
 Expect p99 delays of ~60–100ms for mixed workloads vs ~30ms for pure sync workloads of equivalent CPU cost. Adjust thresholds accordingly — this is inherent to the async machinery, not a sign of starvation.
+
+### Placebo-Controlled Testing
+
+A placebo test pairs each starvation test with a matching workload that does the same CPU work *without* the library's yielding mechanism. This proves the library is actively preventing starvation — not just that the workload is too light to cause it.
+
+```typescript
+const items = Array.from({ length: 10_000 }, (_, i) => i)
+function cpuBurn(item: number) {
+  const end = Date.now() + 2
+  while (Date.now() < end) { /* busy */ }
+}
+
+const monitorOpts = {
+  warmUpMs: 200,
+  sampleCount: 4,
+  sampleIntervalMs: 200,
+  maxP99DelayMs: 100,
+  maxMeanDelayMs: 50,
+  maxUtilization: null, // busy-but-responsive
+}
+
+// Positive: with the library's chunked execution → should pass
+it('does not starve with chunked execution', async () => {
+  await assertNoStarvation(async (ctx) => {
+    while (!ctx.stopped.value) {
+      await executeChunksWithYielding(items, cpuBurn)
+    }
+  }, monitorOpts)
+})
+
+// Placebo: same work, no yielding → should fail
+it('placebo: raw loop starves the event loop', async () => {
+  const result = await withEventLoopMonitor(async (ctx) => {
+    while (!ctx.stopped.value) {
+      for (const item of items) { cpuBurn(item) }
+      await new Promise<void>(resolve => setImmediate(resolve)) // yield between batches so monitoring can measure
+    }
+  }, { ...monitorOpts, maxP99DelayMs: 10, maxMeanDelayMs: 5 })
+
+  expect(result.passed).toBe(false)
+})
+```
+
+**The placebo must yield via `setImmediate` between batches.** Without yields, the histogram's internal timer never fires, producing `count: 0` samples with no delay data. This is not a flaw — it just means the workload blocked the entire process including the measurement infrastructure. The `setImmediate` yield gives the histogram one chance per batch to record the blocking duration, which is all it needs. The yield itself adds negligible time (<1ms) compared to the blocking work, so it doesn't meaningfully reduce the starvation signal.
+
+The key difference between the positive and placebo tests is *where* the yielding happens:
+- **Positive test**: the library yields *within* each batch (between chunks), keeping individual blocking periods short → low p99 delay
+- **Placebo test**: `setImmediate` yields only *between* full batches, so each batch blocks for its entire duration → high p99 delay
 
 ## Profiler Workflow
 
@@ -358,7 +418,6 @@ setInterval(() => {
 ### `forceGC()` Scope
 
 `forceGC()` only triggers GC in the **current V8 isolate**. Each worker thread has its own isolate. Calling `forceGC()` in the main thread does not collect garbage in worker threads, and vice versa. If you need to force GC in a worker, the worker itself must call `forceGC()`.
-```
 
 ## Stream Backpressure Testing
 
