@@ -170,7 +170,7 @@ describe('withEventLoopMonitor', () => {
       async (ctx) => {
         while (!ctx.stopped.value) {
           // Block for ~1000ms (500 items × 2ms)
-          for (const item of items) {
+          for (const _item of items) {
             const end = Date.now() + 2
             while (Date.now() < end) { /* busy */ }
           }

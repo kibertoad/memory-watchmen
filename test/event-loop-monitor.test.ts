@@ -180,7 +180,7 @@ describe('monitorEventLoop', () => {
     const work = async () => {
       while (running) {
         // Block for ~400ms (200 items × 2ms)
-        for (const item of items) {
+        for (const _item of items) {
           const end = Date.now() + 2
           while (Date.now() < end) { /* busy */ }
         }
