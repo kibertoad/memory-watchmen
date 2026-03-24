@@ -173,12 +173,12 @@ export interface EventLoopMonitorOptions {
   sampleIntervalMs?: number
   /** Histogram resolution in nanoseconds (default: 20) — passed to monitorEventLoopDelay */
   resolution?: number
-  /** Maximum p99 delay in milliseconds before declaring starvation (default: 100) */
-  maxP99DelayMs?: number
-  /** Maximum mean delay in milliseconds before declaring starvation (default: 50) */
-  maxMeanDelayMs?: number
-  /** Maximum event loop utilization (0–1) before declaring saturation (default: 0.95) */
-  maxUtilization?: number
+  /** Maximum p99 delay in milliseconds before declaring starvation (default: 100). Set to null to disable. */
+  maxP99DelayMs?: number | null
+  /** Maximum mean delay in milliseconds before declaring starvation (default: 50). Set to null to disable. */
+  maxMeanDelayMs?: number | null
+  /** Maximum event loop utilization (0–1) before declaring saturation (default: 0.95). Set to null to disable. */
+  maxUtilization?: number | null
 }
 
 export interface EventLoopMonitorResult {
@@ -202,11 +202,11 @@ export interface EventLoopMonitorResult {
   utilizationExceeded: boolean
   /** True if all checks passed */
   passed: boolean
-  /** Thresholds that were applied (resolved from options + defaults) */
+  /** Thresholds that were applied (resolved from options + defaults). null means the check was disabled. */
   thresholds: {
-    maxP99DelayMs: number
-    maxMeanDelayMs: number
-    maxUtilization: number
+    maxP99DelayMs: number | null
+    maxMeanDelayMs: number | null
+    maxUtilization: number | null
   }
 }
 

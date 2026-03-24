@@ -60,9 +60,9 @@ export async function monitorEventLoop(options?: EventLoopMonitorOptions): Promi
   const sampleCount = options?.sampleCount ?? 20
   const sampleIntervalMs = options?.sampleIntervalMs ?? 500
   const resolution = options?.resolution ?? 20
-  const maxP99DelayMs = options?.maxP99DelayMs ?? 100
-  const maxMeanDelayMs = options?.maxMeanDelayMs ?? 50
-  const maxUtilization = options?.maxUtilization ?? 0.95
+  const maxP99DelayMs = options?.maxP99DelayMs === null ? null : (options?.maxP99DelayMs ?? 100)
+  const maxMeanDelayMs = options?.maxMeanDelayMs === null ? null : (options?.maxMeanDelayMs ?? 50)
+  const maxUtilization = options?.maxUtilization === null ? null : (options?.maxUtilization ?? 0.95)
 
   const delaySamples: EventLoopDelaySample[] = []
   const utilizationSamples: EventLoopUtilizationSample[] = []
@@ -106,9 +106,9 @@ export async function monitorEventLoop(options?: EventLoopMonitorOptions): Promi
     ? utilizationSamples.reduce((sum, s) => sum + s.utilization, 0) / utilizationSamples.length
     : 0
 
-  const p99DelayExceeded = peakP99DelayMs > maxP99DelayMs
-  const meanDelayExceeded = peakMeanDelayMs > maxMeanDelayMs
-  const utilizationExceeded = peakUtilization > maxUtilization
+  const p99DelayExceeded = maxP99DelayMs !== null && peakP99DelayMs > maxP99DelayMs
+  const meanDelayExceeded = maxMeanDelayMs !== null && peakMeanDelayMs > maxMeanDelayMs
+  const utilizationExceeded = maxUtilization !== null && peakUtilization > maxUtilization
 
   return {
     delaySamples,
@@ -132,13 +132,13 @@ export async function monitorEventLoop(options?: EventLoopMonitorOptions): Promi
 export function formatEventLoopResult(result: EventLoopMonitorResult, context?: string): string {
   const { thresholds } = result
   const parts: string[] = []
-  if (result.p99DelayExceeded) {
+  if (result.p99DelayExceeded && thresholds.maxP99DelayMs !== null) {
     parts.push(`p99 delay ${result.peakP99DelayMs.toFixed(1)}ms > ${thresholds.maxP99DelayMs}ms`)
   }
-  if (result.meanDelayExceeded) {
+  if (result.meanDelayExceeded && thresholds.maxMeanDelayMs !== null) {
     parts.push(`mean delay ${result.peakMeanDelayMs.toFixed(1)}ms > ${thresholds.maxMeanDelayMs}ms`)
   }
-  if (result.utilizationExceeded) {
+  if (result.utilizationExceeded && thresholds.maxUtilization !== null) {
     parts.push(`utilization ${(result.peakUtilization * 100).toFixed(1)}% > ${(thresholds.maxUtilization * 100).toFixed(0)}%`)
   }
   return (

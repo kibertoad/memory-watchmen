@@ -22,16 +22,16 @@ import type {
  *
  * The function `fn` should set up a sustained workload that continues
  * running during the monitoring period (e.g., a streaming pipeline).
- * It receives a context object with a `stopped` flag — set it to true
- * when you detect that monitoring is complete.
+ * It receives a context object with a `stopped` flag — check it to
+ * know when to stop. The workload runs concurrently with monitoring.
  *
  * @example
  * ```ts
  * await assertNoLeak(async (ctx) => {
- *   const interval = setInterval(() => {
- *     if (ctx.stopped.value) { clearInterval(interval); return }
+ *   while (!ctx.stopped.value) {
  *     doWork()
- *   }, 10)
+ *     await sleep(10)
+ *   }
  * })
  * ```
  */
@@ -44,12 +44,22 @@ export async function assertNoLeak(
   const ctx: HeapMonitorContext = { stopped: { value: false } }
 
   forceGC()
-  await fn(ctx)
+
+  // Start workload without awaiting — let it run concurrently with monitoring.
+  // Attach a no-op catch to prevent unhandled rejection if the workload
+  // throws during monitoring — the error is re-thrown when we await below.
+  const workloadPromise = fn(ctx)
+  workloadPromise?.catch?.(() => {})
+
   await sleep(warmUpMs)
 
   const result = await monitorHeap(options)
 
   ctx.stopped.value = true
+
+  // Wait for workload to clean up after being signalled to stop.
+  // If the workload threw, this re-throws that error.
+  await workloadPromise
 
   if (!result.passed) {
     throw new Error(formatHeapResult(result))
@@ -64,11 +74,16 @@ export async function assertNoLeak(
  * Returns the HeapMonitorResult for further assertions. Does NOT throw
  * on failure — the caller decides how to assert (e.g., `expect(result.passed).toBe(true)`).
  *
+ * The workload runs concurrently with monitoring — check `ctx.stopped.value`
+ * to know when to stop.
+ *
  * @example
  * ```ts
  * const result = await withHeapMonitor(async (ctx) => {
- *   startStreaming()
- *   // monitoring happens after this returns
+ *   while (!ctx.stopped.value) {
+ *     doWork()
+ *     await sleep(10)
+ *   }
  * })
  * expect(result.passed, formatHeapResult(result, 'streaming test')).toBe(true)
  * ```
@@ -82,12 +97,22 @@ export async function withHeapMonitor(
   const ctx: HeapMonitorContext = { stopped: { value: false } }
 
   forceGC()
-  await testFn(ctx)
+
+  // Start workload without awaiting — let it run concurrently with monitoring.
+  // Attach a no-op catch to prevent unhandled rejection if the workload
+  // throws during monitoring — the error is re-thrown when we await below.
+  const workloadPromise = testFn(ctx)
+  workloadPromise?.catch?.(() => {})
+
   await sleep(warmUpMs)
 
   const result = await monitorHeap(options)
 
   ctx.stopped.value = true
+
+  // Wait for workload to clean up after being signalled to stop.
+  // If the workload threw, this re-throws that error.
+  await workloadPromise
 
   return result
 }
@@ -120,12 +145,21 @@ export async function assertNoStarvation(
 
   const ctx: EventLoopMonitorContext = { stopped: { value: false } }
 
-  await fn(ctx)
+  // Start workload without awaiting — let it run concurrently with monitoring.
+  // Attach a no-op catch to prevent unhandled rejection if the workload
+  // throws during monitoring — the error is re-thrown when we await below.
+  const workloadPromise = fn(ctx)
+  workloadPromise?.catch?.(() => {})
+
   await sleep(warmUpMs)
 
   const result = await monitorEventLoop(options)
 
   ctx.stopped.value = true
+
+  // Wait for workload to clean up after being signalled to stop.
+  // If the workload threw, this re-throws that error.
+  await workloadPromise
 
   if (!result.passed) {
     throw new Error(formatEventLoopResult(result))
@@ -140,10 +174,16 @@ export async function assertNoStarvation(
  * Returns the EventLoopMonitorResult for further assertions. Does NOT throw
  * on failure — the caller decides how to assert.
  *
+ * The workload runs concurrently with monitoring — check `ctx.stopped.value`
+ * to know when to stop.
+ *
  * @example
  * ```ts
  * const result = await withEventLoopMonitor(async (ctx) => {
- *   startProcessing()
+ *   while (!ctx.stopped.value) {
+ *     doCpuWork()
+ *     await new Promise(resolve => setImmediate(resolve))
+ *   }
  * })
  * expect(result.passed, formatEventLoopResult(result, 'processing')).toBe(true)
  * ```
@@ -156,12 +196,21 @@ export async function withEventLoopMonitor(
 
   const ctx: EventLoopMonitorContext = { stopped: { value: false } }
 
-  await testFn(ctx)
+  // Start workload without awaiting — let it run concurrently with monitoring.
+  // Attach a no-op catch to prevent unhandled rejection if the workload
+  // throws during monitoring — the error is re-thrown when we await below.
+  const workloadPromise = testFn(ctx)
+  workloadPromise?.catch?.(() => {})
+
   await sleep(warmUpMs)
 
   const result = await monitorEventLoop(options)
 
   ctx.stopped.value = true
+
+  // Wait for workload to clean up after being signalled to stop.
+  // If the workload threw, this re-throws that error.
+  await workloadPromise
 
   return result
 }

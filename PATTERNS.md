@@ -192,14 +192,48 @@ Event loop delay is sensitive to system load, unlike heap measurements. In CI:
 
 ### When Delay vs Utilization Matters
 
-| Scenario | Delay | Utilization |
-|----------|-------|-------------|
-| One chunk blocks for 200ms then yields | High p99 | Moderate |
-| Many 1ms chunks with no idle gaps | Low p99 | High (near 1.0) |
-| Cooperative chunking (e.g., butter-spread) | Low p99 | Moderate |
-| Idle server waiting for requests | Low p99 | Low |
+| Scenario | Delay | Utilization | What to check |
+|----------|-------|-------------|---------------|
+| One chunk blocks for 200ms then yields | High p99 | Moderate | Delay (starvation) |
+| Many 1ms chunks with no idle gaps | Low p99 | High (near 1.0) | Delay only — utilization is expected |
+| Cooperative chunking with `setImmediate` yield | Low p99 | High (near 1.0) | Delay only (`maxUtilization: null`) |
+| Idle server waiting for requests | Low p99 | Low | Both |
 
-For testing libraries like butter-spread, **delay** is the primary metric — you want to verify that individual blocking periods stay short. Utilization is a secondary check for saturation.
+For cooperative workloads that yield between chunks, **delay** is the primary metric — you want to verify that individual blocking periods stay short. High utilization is expected and healthy for these workloads because the event loop is actively processing work, not blocked. Use `maxUtilization: null` to disable the utilization check for these cases.
+
+### Starvation vs Saturation
+
+These are distinct states that require different thresholds:
+
+- **Starvation** = timers and I/O callbacks can't fire promptly → high delay. This is always bad.
+- **Saturation** = the event loop is busy but callbacks still fire on time → high utilization, low delay. This can be optimal for CPU-bound workloads that yield cooperatively.
+
+A workload that properly yields via `setImmediate` between chunks will show ~100% utilization (the loop is never idle) but low p99 delay (each turn completes quickly). This is the desired outcome — the CPU is fully utilized while remaining responsive.
+
+The default `maxUtilization: 0.95` will flag this as a failure. For busy-but-responsive workloads, disable the utilization check:
+
+```typescript
+await assertNoStarvation(async (ctx) => {
+  while (!ctx.stopped.value) {
+    processChunk()
+    await new Promise(resolve => setImmediate(resolve))
+  }
+}, {
+  maxP99DelayMs: 100,
+  maxMeanDelayMs: 50,
+  maxUtilization: null, // disable — high utilization is expected
+})
+```
+
+### Mixed Sync/Async Workloads
+
+Workloads that alternate between synchronous and asynchronous operations will show higher delay measurements than pure sync workloads due to Promise microtask overhead:
+
+1. `Promise.resolve()` wrapping creates microtask queue entries
+2. `await` in the executor suspends and resumes for each async chunk
+3. Each async-to-sync transition involves scheduling overhead
+
+Expect p99 delays of ~60–100ms for mixed workloads vs ~30ms for pure sync workloads of equivalent CPU cost. Adjust thresholds accordingly — this is inherent to the async machinery, not a sign of starvation.
 
 ## Profiler Workflow
 
