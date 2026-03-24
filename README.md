@@ -119,7 +119,7 @@ Options (all optional):
 |--------|---------|-------------|
 | `sampleCount` | 20 | Number of monitoring samples |
 | `sampleIntervalMs` | 500 | Milliseconds between samples |
-| `resolution` | 20 | Histogram resolution in nanoseconds |
+| `resolution` | 20 | Histogram resolution in milliseconds |
 | `maxP99DelayMs` | 100 | Max p99 delay before starvation. Set to `null` to disable. |
 | `maxMeanDelayMs` | 50 | Max mean delay before starvation. Set to `null` to disable. |
 | `maxUtilization` | 0.95 | Max utilization (0–1) before saturation. Set to `null` to disable. |

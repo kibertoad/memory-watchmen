@@ -166,8 +166,8 @@ Node.js (14+) provides `perf_hooks.monitorEventLoopDelay()`, a histogram-based s
 **Important**: The workload being monitored must yield periodically (e.g., via `setImmediate`) for the histogram to record any measurements at all. A workload that never yields produces `count: 0` samples with `NaN` mean — because the histogram's timer never gets a chance to fire. This is not a limitation of the tool; a workload that never yields also hangs the process entirely. Any practical starvation test must include yields, and those yields are sufficient for the histogram to capture blocking duration.
 
 Key properties:
-- **Resolution**: configurable (default 20ns). Lower resolution = finer-grained measurements but more overhead.
-- **Percentiles**: p50, p99, min, max, mean — all in nanoseconds. p99 is the most useful for starvation detection because occasional GC pauses inflate max but are normal.
+- **Resolution**: configurable in milliseconds (default 20ms). Lower resolution = finer-grained measurements but more overhead.
+- **Percentiles**: p50, p99, min, max, mean — the histogram records values in nanoseconds. p99 is the most useful for starvation detection because occasional GC pauses inflate max but are normal.
 - **Count**: number of delay measurements in the sample period. A count of 0 means the event loop was blocked for the entire sample interval — the workload is not yielding.
 
 ```typescript
@@ -420,7 +420,6 @@ setInterval(() => {
 ### `forceGC()` Scope
 
 `forceGC()` only triggers GC in the **current V8 isolate**. Each worker thread has its own isolate. Calling `forceGC()` in the main thread does not collect garbage in worker threads, and vice versa. If you need to force GC in a worker, the worker itself must call `forceGC()`.
-```
 
 ## Stream Backpressure Testing
 

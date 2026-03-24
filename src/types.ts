@@ -171,7 +171,7 @@ export interface EventLoopMonitorOptions {
   sampleCount?: number
   /** Milliseconds between samples (default: 500) */
   sampleIntervalMs?: number
-  /** Histogram resolution in nanoseconds (default: 20) — passed to monitorEventLoopDelay */
+  /** Histogram resolution in milliseconds (default: 20) — passed to monitorEventLoopDelay */
   resolution?: number
   /** Maximum p99 delay in milliseconds before declaring starvation (default: 100). Set to null to disable. */
   maxP99DelayMs?: number | null
