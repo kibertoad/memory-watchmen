@@ -1,6 +1,6 @@
 {
   "name": "memory-watchmen",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Memory and event loop testing for Node.js — heap monitoring, event loop delay and utilization tracking, object lifecycle verification, stream buffer assertions, and comparative profiling",
   "type": "module",
   "publishConfig": {
