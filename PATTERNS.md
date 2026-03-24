@@ -197,7 +197,7 @@ This catches a different signal than delay. A loop can have low delay (each turn
 Event loop delay is sensitive to system load, unlike heap measurements. In CI:
 
 - **Use percentiles, not max**: A single GC pause or OS scheduling hiccup inflates max. p99 is more stable.
-- **Use generous thresholds**: CI machines share CPUs. A threshold of 10ms that passes locally may flake in CI. Start with 50–100ms for p99 and tighten after observing baseline.
+- **Use generous thresholds**: CI runners (GitHub Actions, etc.) are typically 2–4x slower than dev machines for timing-sensitive workloads. A threshold of 10ms that passes locally may flake in CI. Build in headroom: if your local p99 is ~30ms, set the threshold to 150–200ms to accommodate slow runners while still failing for genuinely starving workloads.
 - **Warm up before measuring**: JIT compilation and module loading cause initial delay spikes. Wait 500–1000ms before sampling.
 - **Use relative assertions when possible**: "delay didn't grow over time" is more robust than "delay < Xms". Compare first-half samples to second-half samples.
 - **Sample count matters**: More samples smooth out noise. 10–20 samples at 200–500ms intervals gives 2–10 seconds of signal — enough to detect sustained starvation while tolerating transient spikes.
@@ -251,6 +251,8 @@ Expect p99 delays of ~60–100ms for mixed workloads vs ~30ms for pure sync work
 
 A placebo test pairs each starvation test with a matching workload that does the same CPU work *without* the library's yielding mechanism. This proves the library is actively preventing starvation — not just that the workload is too light to cause it.
 
+Use **identical thresholds** for both the positive and placebo tests. If the same bar passes for the library and fails for the raw loop, you've proven that the bar discriminates between the two — a stronger proof than using different thresholds.
+
 ```typescript
 const items = Array.from({ length: 10_000 }, (_, i) => i)
 function cpuBurn(item: number) {
@@ -258,12 +260,13 @@ function cpuBurn(item: number) {
   while (Date.now() < end) { /* busy */ }
 }
 
+// Same config for both positive and placebo — proves the threshold discriminates
 const monitorOpts = {
   warmUpMs: 200,
-  sampleCount: 4,
-  sampleIntervalMs: 200,
-  maxP99DelayMs: 100,
-  maxMeanDelayMs: 50,
+  sampleCount: 6,
+  sampleIntervalMs: 300,
+  maxP99DelayMs: 200,
+  maxMeanDelayMs: 100,
   maxUtilization: null, // busy-but-responsive
 }
 
@@ -276,14 +279,14 @@ it('does not starve with chunked execution', async () => {
   }, monitorOpts)
 })
 
-// Placebo: same work, no yielding → should fail
+// Placebo: same work, no yielding → should fail with the same thresholds
 it('placebo: raw loop starves the event loop', async () => {
   const result = await withEventLoopMonitor(async (ctx) => {
     while (!ctx.stopped.value) {
       for (const item of items) { cpuBurn(item) }
-      await new Promise<void>(resolve => setImmediate(resolve)) // yield between batches so monitoring can measure
+      await new Promise<void>(resolve => setImmediate(resolve))
     }
-  }, { ...monitorOpts, maxP99DelayMs: 10, maxMeanDelayMs: 5 })
+  }, monitorOpts)
 
   expect(result.passed).toBe(false)
 })
@@ -294,6 +297,8 @@ it('placebo: raw loop starves the event loop', async () => {
 The key difference between the positive and placebo tests is *where* the yielding happens:
 - **Positive test**: the library yields *within* each batch (between chunks), keeping individual blocking periods short → low p99 delay
 - **Placebo test**: `setImmediate` yields only *between* full batches, so each batch blocks for its entire duration → high p99 delay
+
+Use `sampleCount: 6` and `sampleIntervalMs: 300` or higher for placebo tests — shorter monitoring windows may produce `count: 0` samples because the histogram's internal timers don't get enough chances to fire between blocking passes.
 
 ## Profiler Workflow
 
