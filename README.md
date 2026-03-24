@@ -84,6 +84,7 @@ Dual-metric leak detection over time:
 2. **Envelope growth** - first-third avg vs last-third avg exceeds threshold (step-wise/burst leaks)
 
 Options (all optional):
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `sampleCount` | 15 | Number of monitoring samples |
@@ -113,6 +114,7 @@ Two complementary checks:
 2. **Utilization** — event loop active ratio stays under saturation threshold (catches CPU saturation — set to `null` to disable for workloads that are intentionally busy but responsive)
 
 Options (all optional):
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `sampleCount` | 20 | Number of monitoring samples |
