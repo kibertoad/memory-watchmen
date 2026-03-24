@@ -1,7 +1,7 @@
 {
   "name": "memory-watchmen",
   "version": "1.0.0",
-  "description": "Memory testing, profiling, and leak detection for Node.js — heap monitoring, object lifecycle tracking, stream buffer assertions, and comparative profiling",
+  "description": "Memory and event loop testing for Node.js — heap monitoring, event loop delay and utilization tracking, object lifecycle verification, stream buffer assertions, and comparative profiling",
   "type": "module",
   "publishConfig": {
     "access": "public"
@@ -53,10 +53,18 @@
     "detection",
     "heap",
     "gc",
+    "event-loop",
+    "starvation",
+    "latency",
+    "utilization",
+    "delay",
+    "perf_hooks",
     "streams",
     "backpressure",
     "profiler",
-    "testing"
+    "testing",
+    "performance",
+    "monitoring"
   ],
   "author": "Igor Savin",
   "license": "MIT",

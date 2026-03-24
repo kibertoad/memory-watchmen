@@ -1,8 +1,8 @@
 # memory-watchmen
 
-Memory testing, profiling, and leak detection for Node.js - heap monitoring, object lifecycle tracking, stream buffer assertions, and comparative profiling.
+Memory and event loop testing for Node.js — heap monitoring, event loop delay and utilization tracking, object lifecycle verification, stream buffer assertions, and comparative profiling.
 
-CI-friendly heap stability checks, object lifecycle tracking with WeakRef/FinalizationRegistry, stream buffer assertions, and an HTTP profiler with chart generation for comparing memory usage across implementations.
+CI-friendly heap stability checks, event loop starvation detection via `perf_hooks`, object lifecycle tracking with WeakRef/FinalizationRegistry, stream buffer assertions, and an HTTP profiler with chart generation for comparing memory usage across implementations.
 
 ## Table of Contents
 
@@ -10,6 +10,7 @@ CI-friendly heap stability checks, object lifecycle tracking with WeakRef/Finali
 - [Quick Start](#quick-start)
 - [API](#api)
   - [Heap Monitor](#heap-monitor)
+  - [Event Loop Monitor](#event-loop-monitor)
   - [Object Tracker](#object-tracker)
   - [Stream Assertions](#stream-assertions)
   - [Test Helpers](#test-helpers)
@@ -29,6 +30,8 @@ Requires Node.js >= 22.0.0.
 
 ## Quick Start
 
+### Heap leak detection
+
 ```typescript
 import { monitorHeap, forceGC, formatHeapResult } from 'memory-watchmen'
 
@@ -39,6 +42,19 @@ const result = await monitorHeap()
 
 if (!result.passed) {
   console.error(formatHeapResult(result, 'my workload'))
+}
+```
+
+### Event loop starvation detection
+
+```typescript
+import { monitorEventLoop, formatEventLoopResult } from 'memory-watchmen'
+
+// No special flags required — uses perf_hooks
+const result = await monitorEventLoop({ maxP99DelayMs: 50 })
+
+if (!result.passed) {
+  console.error(formatEventLoopResult(result, 'my workload'))
 }
 ```
 
@@ -80,6 +96,57 @@ Returns `HeapMonitorResult` with `passed: boolean` and diagnostic fields.
 #### `formatHeapResult(result, context?): string`
 
 Human-readable error message for failed results.
+
+### Event Loop Monitor
+
+```typescript
+import { monitorEventLoop, formatEventLoopResult } from 'memory-watchmen'
+```
+
+#### `monitorEventLoop(options?): Promise<EventLoopMonitorResult>`
+
+Monitors event loop delay and utilization over time using `perf_hooks.monitorEventLoopDelay` and `performance.eventLoopUtilization()`.
+
+Two complementary checks:
+
+1. **Delay** — p99 and mean event loop delay stay under thresholds (catches blocking code)
+2. **Utilization** — event loop active ratio stays under saturation threshold (catches CPU saturation)
+
+Options (all optional):
+| Option | Default | Description |
+|--------|---------|-------------|
+| `sampleCount` | 20 | Number of monitoring samples |
+| `sampleIntervalMs` | 500 | Milliseconds between samples |
+| `resolution` | 20 | Histogram resolution in nanoseconds |
+| `maxP99DelayMs` | 100 | Max p99 delay before starvation |
+| `maxMeanDelayMs` | 50 | Max mean delay before starvation |
+| `maxUtilization` | 0.95 | Max utilization (0–1) before saturation |
+
+Returns `EventLoopMonitorResult` with `passed: boolean` and diagnostic fields including per-sample delay histograms and utilization ratios.
+
+```typescript
+const result = await monitorEventLoop({
+  sampleCount: 10,
+  sampleIntervalMs: 200,
+  maxP99DelayMs: 50,
+})
+
+if (!result.passed) {
+  console.error(formatEventLoopResult(result, 'my workload'))
+}
+```
+
+#### `formatEventLoopResult(result, context?): string`
+
+Human-readable error message for failed results.
+
+#### `collectDelaySample(histogram): EventLoopDelaySample`
+
+Low-level: read percentiles from a running `monitorEventLoopDelay` histogram.
+
+#### `collectUtilizationSample(previous): EventLoopUtilizationSample`
+
+Low-level: diff two `performance.eventLoopUtilization()` snapshots.
 
 ### Object Tracker
 
@@ -156,7 +223,10 @@ Resolves when `'drain'` fires, rejects on timeout.
 ### Test Helpers
 
 ```typescript
-import { assertNoLeak, withHeapMonitor } from 'memory-watchmen/vitest'
+import {
+  assertNoLeak, withHeapMonitor,
+  assertNoStarvation, withEventLoopMonitor,
+} from 'memory-watchmen/vitest'
 ```
 
 #### `assertNoLeak(fn, options?)`
@@ -181,6 +251,32 @@ const result = await withHeapMonitor(async (ctx) => {
   startStreaming()
 })
 expect(result.passed, formatHeapResult(result, 'streaming')).toBe(true)
+```
+
+#### `assertNoStarvation(fn, options?)`
+
+Runs a function and asserts it doesn't starve the event loop. Throws with a diagnostic message if p99 delay, mean delay, or utilization exceed thresholds.
+
+```typescript
+await assertNoStarvation(async (ctx) => {
+  while (!ctx.stopped.value) {
+    doCpuWork()
+    await new Promise(resolve => setImmediate(resolve))
+  }
+}, { maxP99DelayMs: 50 })
+```
+
+Does not require `--expose-gc` — uses `perf_hooks` APIs that work in any Node.js process.
+
+#### `withEventLoopMonitor(testFn, options?): Promise<EventLoopMonitorResult>`
+
+Wraps a test function with event loop monitoring. Does NOT throw — returns the result for custom assertions.
+
+```typescript
+const result = await withEventLoopMonitor(async (ctx) => {
+  startProcessing()
+})
+expect(result.passed, formatEventLoopResult(result, 'processing')).toBe(true)
 ```
 
 ### Profiler
@@ -334,6 +430,8 @@ Reach for [memlab](https://github.com/nicolo-ribaudo/memlab) when you need:
 ## When to Use memory-watchmen
 
 - Process-level heap stability checks that run in CI
+- Event loop starvation detection — verify CPU-bound work yields properly
+- Event loop utilization tracking — ensure the loop isn't saturated under load
 - Leak detection during sustained streaming/backpressure load
 - Checking that objects actually get collected (WeakRef/FinalizationRegistry)
 - Stream buffer assertions (readableLength, writableNeedDrain, etc.)

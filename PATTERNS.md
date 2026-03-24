@@ -10,6 +10,7 @@ Best practices and patterns for detecting memory leaks, optimizing memory usage,
 - [Dual-Metric Leak Detection](#dual-metric-leak-detection)
 - [Sample Count and Interval Tuning](#sample-count-and-interval-tuning)
 - [CI Considerations](#ci-considerations)
+- [Event Loop Delay and Utilization](#event-loop-delay-and-utilization)
 - [Profiler Workflow](#profiler-workflow)
 - [Forking, Workers, and --expose-gc](#forking-workers-and---expose-gc)
 - [Stream Backpressure Testing](#stream-backpressure-testing)
@@ -139,6 +140,66 @@ export default defineConfig({
 ```
 
 Do not rely on `NODE_OPTIONS=--expose-gc` for vitest - it applies to the vitest process itself but may not propagate to workers depending on the pool type. The `execArgv` config is explicit and reliable.
+
+## Event Loop Delay and Utilization
+
+### Why Monitor the Event Loop?
+
+CPU-bound operations in Node.js block the event loop, preventing I/O callbacks, timers, and incoming requests from being processed. Libraries like [butter-spread](https://www.npmjs.com/package/butter-spread) chunk blocking work and yield between chunks via `setImmediate`, but verifying that the loop remains responsive requires measurement.
+
+Two complementary metrics:
+
+### Event Loop Delay (`monitorEventLoopDelay`)
+
+Node.js (14+) provides `perf_hooks.monitorEventLoopDelay()`, a histogram-based sampler that measures how long the event loop was blocked between turns. It uses a libuv timer internally — each time the timer fires, the elapsed time since it was expected to fire is recorded as the delay.
+
+Key properties:
+- **Resolution**: configurable (default 20ns). Lower resolution = finer-grained measurements but more overhead.
+- **Percentiles**: p50, p99, min, max, mean — all in nanoseconds. p99 is the most useful for starvation detection because occasional GC pauses inflate max but are normal.
+- **Count**: number of delay measurements in the sample period.
+
+```typescript
+import { monitorEventLoopDelay } from 'node:perf_hooks'
+
+const histogram = monitorEventLoopDelay({ resolution: 20 })
+histogram.enable()
+
+// ... let workload run ...
+
+console.log(`p99: ${histogram.percentile(99) / 1e6}ms`)
+histogram.reset() // reset for next sample window
+```
+
+### Event Loop Utilization (`performance.eventLoopUtilization`)
+
+Node.js (14.10+) provides `performance.eventLoopUtilization()`, which returns `{ idle, active, utilization }` — the fraction of time the loop spent active vs idle. Diffing two snapshots gives utilization over an interval.
+
+- **utilization = 0**: loop is completely idle (no work)
+- **utilization = 1**: loop is 100% active (saturated, no idle time)
+- **Typical healthy range**: 0.1–0.85 depending on workload
+
+This catches a different signal than delay. A loop can have low delay (each turn completes quickly) but high utilization (turns fire back-to-back with no idle gaps). Conversely, a loop with one long-blocking operation shows high delay but utilization might not look extreme over a long sample window.
+
+### CI Considerations for Timing-Sensitive Tests
+
+Event loop delay is sensitive to system load, unlike heap measurements. In CI:
+
+- **Use percentiles, not max**: A single GC pause or OS scheduling hiccup inflates max. p99 is more stable.
+- **Use generous thresholds**: CI machines share CPUs. A threshold of 10ms that passes locally may flake in CI. Start with 50–100ms for p99 and tighten after observing baseline.
+- **Warm up before measuring**: JIT compilation and module loading cause initial delay spikes. Wait 500–1000ms before sampling.
+- **Use relative assertions when possible**: "delay didn't grow over time" is more robust than "delay < Xms". Compare first-half samples to second-half samples.
+- **Sample count matters**: More samples smooth out noise. 10–20 samples at 200–500ms intervals gives 2–10 seconds of signal — enough to detect sustained starvation while tolerating transient spikes.
+
+### When Delay vs Utilization Matters
+
+| Scenario | Delay | Utilization |
+|----------|-------|-------------|
+| One chunk blocks for 200ms then yields | High p99 | Moderate |
+| Many 1ms chunks with no idle gaps | Low p99 | High (near 1.0) |
+| Cooperative chunking (e.g., butter-spread) | Low p99 | Moderate |
+| Idle server waiting for requests | Low p99 | Low |
+
+For testing libraries like butter-spread, **delay** is the primary metric — you want to verify that individual blocking periods stay short. Utilization is a secondary check for saturation.
 
 ## Profiler Workflow
 
@@ -580,6 +641,10 @@ This library builds on patterns from Node.js core, ecosystem projects, and V8 do
 
 - **Comparative memory profiling** - the HTTP-based profiler with NDJSON streaming and HTML chart generation is inspired by benchmarking patterns common in streaming parser libraries, where comparing peak/baseline/delta across implementations is the primary optimization workflow.
 
+- **Event loop delay monitoring** - `perf_hooks.monitorEventLoopDelay()` was added in Node.js 12 and provides a histogram-based event loop delay sampler built on libuv's internal timer mechanism. The [Node.js documentation on monitorEventLoopDelay](https://nodejs.org/docs/latest/api/perf_hooks.html#perf_hooksmonitoreventloopdelayoptions) and the [Diagnostics Guide](https://nodejs.org/en/learn/diagnostics/live-debugging/using-diagnostics-channel) describe the API and its use for monitoring loop health.
+
+- **Event loop utilization** - `performance.eventLoopUtilization()` was added in Node.js 14.10 and returns idle/active time ratios. It was designed specifically for load balancing and health checking in production. See [Node.js ELU documentation](https://nodejs.org/docs/latest/api/perf_hooks.html#performanceeventlooputilizationutilization1-utilization2) and Trevor Norris's original [PR #33922](https://github.com/nodejs/node/pull/33922) for design rationale.
+
 ## Further Reading
 
 ### V8 Garbage Collection
@@ -597,6 +662,13 @@ This library builds on patterns from Node.js core, ecosystem projects, and V8 do
 - [Node.js: Understanding and Tuning Memory](https://nodejs.org/en/learn/diagnostics/memory/understanding-and-tuning-memory) - official guide to `--max-old-space-size`, heap limits, and memory diagnostics
 - [Node.js Diagnostics: Memory](https://nodejs.org/en/learn/diagnostics/memory) - official overview of memory debugging tools and techniques
 - [Backpressuring in Streams](https://nodejs.org/en/learn/modules/backpressuring-in-streams) - official guide to how `highWaterMark`, `write()` return value, and `'drain'` work together
+
+### Event Loop
+
+- [Node.js: monitorEventLoopDelay](https://nodejs.org/docs/latest/api/perf_hooks.html#perf_hooksmonitoreventloopdelayoptions) - histogram-based event loop delay measurement API
+- [Node.js: eventLoopUtilization](https://nodejs.org/docs/latest/api/perf_hooks.html#performanceeventlooputilizationutilization1-utilization2) - idle/active time ratios for load assessment
+- [The Node.js Event Loop, Timers, and process.nextTick()](https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick) - official guide to event loop phases
+- [Don't Block the Event Loop](https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop) - official guide to avoiding event loop starvation
 
 ### Heap Snapshot Analysis
 
