@@ -6,6 +6,7 @@ import {
   assertBackpressure,
   assertDrainOccurred,
   assertFlowing,
+  monitorPushBackpressure,
   monitorStreamBuffers,
   snapshotStreamState,
 } from '../src/index.ts'
@@ -90,6 +91,98 @@ describe('assertDrainOccurred', () => {
     writable.write('data')
 
     await expect(assertDrainOccurred(writable, 100)).rejects.toThrow('Drain event did not fire')
+  })
+})
+
+describe('monitorPushBackpressure', () => {
+  it('tracks push count and maxReadableLength', () => {
+    const readable = new Readable({
+      objectMode: true,
+      highWaterMark: 2,
+      read() {},
+    })
+
+    const monitor = monitorPushBackpressure(readable)
+
+    readable.push('a')
+    readable.push('b')
+    readable.push('c') // exceeds highWaterMark
+
+    const stats = monitor.stop()
+
+    expect(stats.pushCount).toBe(3)
+    expect(stats.maxReadableLength).toBe(3)
+  })
+
+  it('tracks pushFalseCount when buffer exceeds highWaterMark', () => {
+    const readable = new Readable({
+      objectMode: true,
+      highWaterMark: 1,
+      read() {},
+    })
+
+    const monitor = monitorPushBackpressure(readable)
+
+    const result1 = readable.push('a') // fills to HWM
+    const result2 = readable.push('b') // exceeds HWM
+
+    const stats = monitor.stop()
+
+    expect(result1).toBe(false) // at HWM, returns false
+    expect(result2).toBe(false)
+    expect(stats.pushFalseCount).toBe(2)
+    expect(stats.firstPushFalseAtReadableLength).toBe(1)
+  })
+
+  it('reports null for firstPushFalseAtReadableLength when no backpressure', () => {
+    const readable = new Readable({
+      objectMode: true,
+      highWaterMark: 100,
+      read() {},
+    })
+
+    const monitor = monitorPushBackpressure(readable)
+    readable.push('a')
+
+    const stats = monitor.stop()
+
+    expect(stats.pushFalseCount).toBe(0)
+    expect(stats.firstPushFalseAtReadableLength).toBeNull()
+  })
+
+  it('stops tracking after stop() and further pushes are not counted', () => {
+    const readable = new Readable({
+      objectMode: true,
+      highWaterMark: 1,
+      read() {},
+    })
+
+    const monitor = monitorPushBackpressure(readable)
+
+    readable.push('a')
+    const stats = monitor.stop()
+
+    // further pushes don't update stats
+    readable.push('b')
+    expect(stats.pushCount).toBe(1)
+  })
+
+  it('provides live stats via stats getter', () => {
+    const readable = new Readable({
+      objectMode: true,
+      highWaterMark: 10,
+      read() {},
+    })
+
+    const monitor = monitorPushBackpressure(readable)
+
+    expect(monitor.stats.pushCount).toBe(0)
+    readable.push('a')
+    expect(monitor.stats.pushCount).toBe(1)
+    readable.push('b')
+    expect(monitor.stats.pushCount).toBe(2)
+
+    monitor.stop()
   })
 })
 

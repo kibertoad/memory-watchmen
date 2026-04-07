@@ -68,6 +68,24 @@ export interface StreamMonitor {
   readonly samples: StreamBufferSample[]
 }
 
+export interface PushBackpressureStats {
+  /** Total number of push() calls observed */
+  pushCount: number
+  /** Number of push() calls that returned false (backpressure signal) */
+  pushFalseCount: number
+  /** Peak readableLength observed immediately after each push() */
+  maxReadableLength: number
+  /** readableLength at the time of the first push() returning false */
+  firstPushFalseAtReadableLength: number | null
+}
+
+export interface PushBackpressureMonitor {
+  /** Stop monitoring and restore the original push() method */
+  stop(): PushBackpressureStats
+  /** Current stats (live, updated on each push) */
+  readonly stats: PushBackpressureStats
+}
+
 export interface BufferBoundedOptions {
   /** Milliseconds between checks (default: 100) */
   intervalMs?: number

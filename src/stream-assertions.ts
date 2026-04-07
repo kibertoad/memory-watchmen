@@ -1,7 +1,14 @@
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { Readable, Writable } from 'node:stream'
 
-import type { BufferBoundedOptions, StreamBufferSample, StreamMonitor, StreamSnapshot } from './types.ts'
+import type {
+  BufferBoundedOptions,
+  PushBackpressureMonitor,
+  PushBackpressureStats,
+  StreamBufferSample,
+  StreamMonitor,
+  StreamSnapshot,
+} from './types.ts'
 
 type AnyStream = Readable | Writable | (Readable & Writable)
 
@@ -160,6 +167,62 @@ export async function assertDrainOccurred(writable: Writable, timeout = 5000): P
 
     writable.once('drain', onDrain)
   })
+}
+
+/**
+ * Monitor a Readable stream's push() calls to track backpressure behavior.
+ *
+ * Instruments push() to record every call and its return value, capturing the
+ * peak readableLength without polling gaps. This is more precise than interval-based
+ * monitoring for detecting unbounded buffer growth on the readable side.
+ *
+ * Use this when testing custom Readable streams that produce data from external
+ * sources (network, message queues, databases) to verify they respect push()
+ * returning false.
+ */
+export function monitorPushBackpressure(readable: Readable): PushBackpressureMonitor {
+  const stats: PushBackpressureStats = {
+    pushCount: 0,
+    pushFalseCount: 0,
+    maxReadableLength: 0,
+    firstPushFalseAtReadableLength: null,
+  }
+
+  const origPush = readable.push.bind(readable)
+  let active = true
+
+  readable.push = function (...args: Parameters<typeof origPush>) {
+    const result = origPush(...args)
+
+    if (active) {
+      stats.pushCount++
+
+      const len = readable.readableLength
+      if (len > stats.maxReadableLength) {
+        stats.maxReadableLength = len
+      }
+
+      if (!result) {
+        stats.pushFalseCount++
+        if (stats.firstPushFalseAtReadableLength === null) {
+          stats.firstPushFalseAtReadableLength = len
+        }
+      }
+    }
+
+    return result
+  } as typeof origPush
+
+  return {
+    get stats() {
+      return stats
+    },
+    stop() {
+      active = false
+      readable.push = origPush
+      return stats
+    },
+  }
 }
 
 /**

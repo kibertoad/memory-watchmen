@@ -553,6 +553,91 @@ await pipeline(source, processor, slowSink)
 
 A common source of backpressure leaks: writing to a stream without checking `write()` return value and waiting for `'drain'`. If `write()` returns `false`, the internal buffer has exceeded `highWaterMark` and the producer must pause until `'drain'` fires.
 
+### Readable-Side Backpressure (push)
+
+The writable-side pattern above covers `write()` / `'drain'`, but custom Readable streams that produce data from external sources (network, databases, message queues) have a **symmetric problem on the readable side**: `push()` returns `false` when the readable buffer exceeds `highWaterMark`, signaling the producer to stop until `_read()` is called again.
+
+Ignoring `push()` returning `false` causes unbounded memory growth — the readable buffer absorbs the entire dataset while the consumer processes slowly. This is especially insidious because:
+
+- The stream still "works" — all messages are eventually consumed.
+- No errors are thrown — `push()` after `false` is legal, just inadvisable.
+- Heap growth may be attributed to "expected buffering" rather than a missing backpressure gate.
+
+```typescript
+// BAD: ignores push() return value — buffer grows unbounded
+async #fetchLoop() {
+  const records = await this.fetchFromSource()
+  for (const record of records) {
+    this.push(record)          // return value discarded!
+  }
+  process.nextTick(() => this.#fetchLoop())  // always fetches more
+}
+
+// GOOD: respects push() return value — relies on _read() to restart
+async #fetchLoop() {
+  const records = await this.fetchFromSource()
+  let canPush = true
+  for (const record of records) {
+    canPush = this.push(record)
+    if (!canPush) break            // stop immediately on backpressure
+  }
+  if (canPush) {
+    process.nextTick(() => this.#fetchLoop())  // only fetch if buffer has room
+  }
+  // When canPush is false, the loop stops. Node.js calls _read() when
+  // the buffer drains below highWaterMark, which restarts fetching.
+}
+```
+
+**Caution with `pipeline()` and `_read()` reliability**: In flowing mode with `pipeline()`, Node.js may not always call `_read()` after `resume()` if it considers the stream "already flowing." If your Readable overrides `pause()` / `resume()` (e.g., for an internal fetch loop), you may need to explicitly restart the fetch loop in `resume()` to prevent permanent stalls:
+
+```typescript
+resume() {
+  const wasPaused = this.#paused
+  this.#paused = false
+  const result = super.resume()
+  if (wasPaused) {
+    process.nextTick(() => this.#fetchLoop())  // explicitly restart
+  }
+  return result
+}
+```
+
+This is a real-world pattern: without the `resume()` restart, the combination of the `canPush` gate + `pipeline()` backpressure can permanently stall the stream. Both pieces are needed together.
+
+### `for await` vs `pipeline` Backpressure
+
+When testing backpressure, the consumption method matters:
+
+- **`pipeline(readable, writable)`** — pipe internally calls `pause()` and `resume()` on the readable when the writable signals backpressure. This provides an explicit pause/resume cycle that custom readables can hook into (via overriding `pause()` / `resume()`).
+
+- **`for await (const chunk of readable)`** — the async iterator protocol pulls from the readable buffer one chunk at a time. There is no explicit `pause()` / `resume()` cycle. Backpressure relies entirely on the readable's `push()` return value and `_read()` callback.
+
+This distinction matters for testing because `for await` with slow processing is a **more revealing test** — it exercises the `push()` → `_read()` contract directly without `pipe()`'s safety net. A Readable that ignores `push()` returning `false` will buffer unboundedly under `for await`, but may appear well-behaved under `pipeline()` if `pipe()`'s `pause()` / `resume()` cycle happens to throttle it.
+
+Use both consumption patterns in backpressure tests to catch bugs that only surface under one.
+
+### Monitoring push() for Readable Backpressure
+
+Interval-based polling of `readableLength` can miss the peak buffer size between samples. For precise tracking of readable-side backpressure, use `monitorPushBackpressure()` to instrument `push()` directly:
+
+```typescript
+import { monitorPushBackpressure } from 'memory-watchmen'
+
+const monitor = monitorPushBackpressure(readable)
+
+// ... run workload with slow consumer ...
+
+const stats = monitor.stop()
+// stats.maxReadableLength — peak buffer size (never missed between samples)
+// stats.pushCount         — total push() calls
+// stats.pushFalseCount    — how many returned false (backpressure signals)
+
+// With backpressure working, maxReadableLength should be a small fraction
+// of total data volume. Without it, it grows to nearly the full dataset.
+assert(stats.maxReadableLength < totalMessages / 2)
+```
+
 ### Stream Buffer Assertions
 
 Monitor buffer sizes during backpressure to verify they don't grow unbounded over time:
