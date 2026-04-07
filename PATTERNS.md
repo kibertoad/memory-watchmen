@@ -579,6 +579,7 @@ async #fetchLoop() {
   let canPush = true
   for (const record of records) {
     canPush = this.push(record)
+    if (!canPush) break            // stop immediately on backpressure
   }
   if (canPush) {
     process.nextTick(() => this.#fetchLoop())  // only fetch if buffer has room
