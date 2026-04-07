@@ -7,6 +7,7 @@ export {
   assertBackpressure,
   assertDrainOccurred,
   assertFlowing,
+  monitorPushBackpressure,
 } from './stream-assertions.ts'
 export {
   monitorEventLoop,
@@ -26,6 +27,8 @@ export type {
   StreamBufferSample,
   StreamMonitor,
   BufferBoundedOptions,
+  PushBackpressureStats,
+  PushBackpressureMonitor,
   ProfileRequest,
   ProfileSummary,
   ApproachFn,
